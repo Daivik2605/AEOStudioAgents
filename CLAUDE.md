@@ -21,7 +21,7 @@ Read PLAN.md first. It defines what we are building, the four prototype agents, 
 
 We are building four agents: `business-profiler`, `ai-visibility-probe`, `aeo-audit`, `aeo-recommendations`.
 
-Build order: scaffold → core → scoring → fixtures → aeo-audit → aeo-recommendations → ai-visibility-probe → business-profiler.
+Build order: scaffold → core → scoring → seed O'land profile → ai-visibility-probe (manual) → aeo-audit → aeo-recommendations → business-profiler. The audit is the top priority.
 
 Do not build anything outside this list until the four are done and tested.
 
@@ -39,7 +39,7 @@ Do not build anything outside this list until the four are done and tested.
 
 - The probe stores full AI answers. Scores are derived from them by a versioned formula.
 
-- Nothing is hardcoded to an industry, city, or language. Everything reads from the Business Profile.
+- Nothing is hardcoded to an industry, city, or language. Everything reads from the Business Profile. O'land exists only in seed data — never in code, prompts or templates.
 
 ## Approval gate
 

@@ -1,6 +1,6 @@
 # AEOStudioAgents — Plan
 
-**Version 3 · 27 September 2026**
+**Version 3.1 · 27 September 2026**
 
 Read this file before doing anything in this repository. It defines what we are building, the four prototype agents, the lifecycle, the database, and the rules. When a decision is not covered here, ask rather than assume.
 
@@ -121,18 +121,19 @@ Progress within a stage (profiled, gated, probed, audited) is not a status — i
 
 ## 6. Prototype scope
 
-Four agents in this phase. Two are built first, against hand-written test data.
+**Priority: the audit.** First we measure O'land's current AEO — what AI says today and where it fails. Then we build the fixes. Then we ask the same questions again and compare.
 
-| Agent | Purpose | Built |
+| Step | What | Agents |
 |---|---|---|
-| aeo-audit | Client-facing visibility report | **First** |
-| aeo-recommendations | Fixes for wrong facts and visibility gaps: JSON-LD, llms.txt, content drafts | **First** |
-| ai-visibility-probe | Asks AI engines, records answers, checks claims | After the two above |
-| business-profiler | Turns a website into a profile v1 | Last |
+| 1. Audit | What AI says about O'land today, and where it fails | ai-visibility-probe (manual), aeo-audit |
+| 2. Fix | The files that take O'land's AEO to the next level | aeo-recommendations |
+| 3. Compare | The same questions again — before vs after | ai-visibility-probe, aeo-audit (re-audit) |
 
-**Test data (fixtures).** A seed script fills the real tables with hand-written O'land Stations data: the business, profile v1, a visibility probe run, profile v2 (questionnaire answers), and an accuracy probe run that includes the real "Montreal only" error. The agents read the same tables either way — they cannot tell test data from real data, so there is no special fixture code to remove later. Fixture files live in `fixtures/oland_stations/`.
+**Real answers, not made-up ones.** O'land's audit uses real AI answers, collected by hand in manual mode (no engine API cost). Only the profile is hand-written for now — `seed/oland_stations/profile_v1.json`, in exactly the shape business-profiler will produce later. When the profiler is built, it replaces the hand-written file and nothing else changes.
 
-This order gives us something useful before any money is spent on API calls.
+**Built for any business.** O'land exists only in seed data. No code, prompt or template may mention O'land, events, water, or Montreal. The test: the dental practice must run through the same audit with nothing new except its own profile file.
+
+**Websites usually don't say it.** Most sites never clearly state what the business does, where it serves, or who it is for. That is expected — it is exactly what our on-page deliverables fix.
 
 ---
 
@@ -162,14 +163,14 @@ This order gives us something useful before any money is spent on API calls.
 
 **Purpose.** The client-facing visibility report. Proves the problem is real and records the starting point.
 **Input.** Profile + visibility probe run + scores.
-**Output.** Structured fields (section 11) stored in `audits.audit_data`, rendered to a PDF by a template.
+**Output.** Structured fields (section 12) stored in `audits.audit_data`, rendered to a PDF by a template. Includes the AI responses themselves — short quotes of what each engine actually said — so the client sees the problem in AI's own words.
 **Model.** Opus for the one summary paragraph. Everything else is data.
 **Rules.** Never states anything the probe data does not show. Never contains our fix plan. Re-audit mode compares against the baseline run and includes accuracy once it exists; it records what changed without claiming sole cause.
 
 ### aeo-recommendations
 
 **Purpose.** Specific, prioritised fixes a person can act on.
-**Input.** Profile v2 + visibility run + accuracy run + the live site's HTML.
+**Input.** Latest profile + visibility run + the live site's HTML. Plus the accuracy run once it exists (after the questionnaire) — recommendations can run on visibility gaps alone first, and be re-run when accuracy results arrive.
 **Output.**
 - Priority fixes, ordered
 - For each wrong fact: where to state it on the site, the JSON-LD property (e.g. `areaServed`), an FAQ entry, and — if the wrong fact came from another website — that source, flagged for a person to correct
@@ -281,7 +282,7 @@ pdf_path, status (draft/approved/sent), created_at
 **8. recommendations**
 ```
 id, business_id, business_profile_id,
-visibility_probe_run_id, accuracy_probe_run_id,
+visibility_probe_run_id, accuracy_probe_run_id (nullable until the accuracy run exists),
 priority_fixes jsonb, fact_fixes jsonb, off_site_sources jsonb,
 existing_jsonld jsonb, existing_schema_issues jsonb,
 generated_jsonld jsonb, llms_txt, validation_status, validation_errors jsonb,
@@ -375,7 +376,7 @@ Unverifiable claims are not counted.
 recognition_rate = answers where the AI knew the business / total brand answers × 100
 ```
 
-**Tiers** (visibility): 0–19 Invisible · 20–39 Barely Visible · 40–59 Partially Visible · 60–79 Visible · 80–100 Dominant
+**Tiers** (visibility): below 20 Invisible · 20 to below 40 Barely Visible · 40 to below 60 Partially Visible · 60 to below 80 Visible · 80–100 Dominant. Scores are decimals (e.g. 7 of 36 answers = 19.4), so bands are defined by their lower edge.
 
 A business is spotted in an answer by matching its `name` and `alternate_names`.
 
@@ -385,7 +386,7 @@ A business is spotted in an answer by matching its `name` and `alternate_names`.
 
 Agents fill in named fields. A template draws the PDF. Layout is code, not AI.
 
-**Audit fields:** business_name, report_date, visibility_score, visibility_tier, gap_score, questions_asked, engines_used, location_context, competitor_table (name, times named, engines), engine_breakdown (per engine: score, who appeared), summary_paragraph (the only free text). Re-audits add a before/after table, and accuracy_score, recognition_rate and wrong_facts once they exist.
+**Audit fields:** business_name, report_date, visibility_score, visibility_tier, gap_score, questions_asked, engines_used, location_context, competitor_table (name, times named, engines), engine_breakdown (per engine: score, who appeared), response_excerpts (question, engine, short quote, who was named), summary_paragraph (the only free text). Re-audits add a before/after table, and accuracy_score, recognition_rate and wrong_facts once they exist.
 
 **Recommendations fields:** business_name, report_date, priority_fixes (what, why, action, expected impact), fact_fixes (AI says, truth, engine, source cited, fix), off_site_sources, schema_blocks, llms_txt, content_drafts (target question, draft, edit status), existing_schema_issues.
 
@@ -482,11 +483,14 @@ Never edit a prompt version after it has run; add a new version. Every AI call l
 0. **Scaffold** — folders, `pyproject.toml`, Docker Postgres, migrations for all 12 tables including the status trigger. No agent logic.
 1. **`core/`** — AI call wrapper with logging, database access, journal function, runner, error handling.
 2. **`scoring/`** — the five formulas as pure functions, with tests at every tier boundary.
-3. **Fixtures** — O'land seed data (see section 6).
-4. **aeo-audit** — against fixtures, until the PDF is genuinely useful.
-5. **aeo-recommendations** — against fixtures, until the JSON-LD validates and the fixes are specific.
-6. **ai-visibility-probe** — manual mode, both run types.
-7. **business-profiler** — tested on all four test businesses.
+3. **Seed O'land** — `aeo add` + the hand-written profile v1.
+4. **ai-visibility-probe, manual mode, visibility run** — write category questions from the profile, print them, take pasted answers, store them raw, extract names, score.
+5. **aeo-audit** — produce the PDF from that run.
+6. **Run it for real on O'land** — this is the baseline. Then run the dental practice through the same steps to prove nothing is O'land-specific.
+7. **aeo-recommendations** — the fix files.
+8. **Accuracy run type** — after O'land's questionnaire.
+9. **business-profiler** — replaces the hand-written profiles.
+10. **Re-audit and compare.**
 
 Stop after each step for review. Do not build ahead.
 
@@ -513,7 +517,7 @@ aeo status --business <id> <status>
 aeo mark-sent | mark-deployed | mark-published --business <id>
 aeo note --business <id> "text"
 aeo queue
-aeo seed oland                       # load O'land fixtures
+aeo seed <folder>                    # load a hand-written profile, e.g. seed/oland_stations
 ```
 
 ---

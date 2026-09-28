@@ -1,0 +1,21 @@
+# Weights and tier bands for scoring/scoring.py (PLAN.md section 11).
+# PLAN.md is the source of truth for what these numbers should be; this file
+# just makes them editable without touching code.
+
+# opportunity_score = gap_score * <gap_score weight>
+#                    + fixability_signal * <fixability_signal weight>
+#                    + business_reality_signal * <business_reality_signal weight>
+opportunity_score_weights:
+  gap_score: 0.5
+  fixability_signal: 0.3
+  business_reality_signal: 0.2
+
+# visibility_score (0-100) falls into the first band whose "max" it doesn't
+# exceed, in order. Bands must be listed low to high and the last one must
+# end at 100, or visibility_tier() has no answer for high scores.
+visibility_tiers:
+  - { max: 19, label: "Invisible" }
+  - { max: 39, label: "Barely Visible" }
+  - { max: 59, label: "Partially Visible" }
+  - { max: 79, label: "Visible" }
+  - { max: 100, label: "Dominant" }

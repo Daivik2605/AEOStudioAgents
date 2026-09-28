@@ -1,0 +1,6 @@
+{
+    "_comment": "USD per 1,000,000 tokens. Confirmed against Anthropic's own pricing page (platform.claude.com/docs/en/about-claude/pricing) as of 2026-09-28. Anthropic can change pricing at any time -- re-check this against that page periodically, don't assume it stays correct forever.",
+    "claude-opus-5-5": { "input_per_million": 4.0, "output_per_million": 20.0 },
+    "claude-sonnet-5": { "input_per_million": 2.0, "output_per_million": 10.0 },
+    "claude-haiku-4-5-20251001": { "input_per_million": 1.0, "output_per_million": 5.0 }
+}
