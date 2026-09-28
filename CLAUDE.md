@@ -21,7 +21,7 @@ Read PLAN.md first. It defines what we are building, the four prototype agents, 
 
 We are building four agents: `business-profiler`, `ai-visibility-probe`, `aeo-audit`, `aeo-recommendations`.
 
-Build order: fixtures → aeo-audit → aeo-recommendations → ai-visibility-probe → business-profiler.
+Build order: scaffold → core → scoring → fixtures → aeo-audit → aeo-recommendations → ai-visibility-probe → business-profiler.
 
 Do not build anything outside this list until the four are done and tested.
 
@@ -60,7 +60,7 @@ The probe has two modes. **Manual is the default.**
 
 - Local development runs Postgres in Docker. Supabase comes later; the SQL is the same.
 - Migrations are append-only. Never edit an applied migration — add a new numbered one.
-- 14 tables are defined in PLAN.md section 8. Write migrations for all of them in the scaffold step.
+- 12 tables are defined in PLAN.md section 9. Write migrations for all of them, including the status-change trigger, in the scaffold step.
 
 ## Prompts
 
