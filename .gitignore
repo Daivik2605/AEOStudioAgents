@@ -13,3 +13,5 @@ __pycache__/
 # Local output
 runs/
 *.pdf
+MASTER_PROMPT.md
+MASTER_PROMPT.md # skip if you already ran it

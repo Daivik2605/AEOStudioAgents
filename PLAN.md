@@ -1,6 +1,6 @@
 # AEOStudioAgents — Plan
 
-**Version 3.1 · 27 September 2026**
+**Version 3.2 · 29 September 2026** (changes since 3.1 are listed in the changelog at the end)
 
 Read this file before doing anything in this repository. It defines what we are building, the four prototype agents, the lifecycle, the database, and the rules. When a decision is not covered here, ask rather than assume.
 
@@ -117,6 +117,12 @@ EVERY STEP ALSO WRITES TO
 
 Progress within a stage (profiled, gated, probed, audited) is not a status — it is already recorded in its own table.
 
+**Every `declined` or `rejected` needs a reason.** *(added 29 Sep 2026)* The reason is required, never optional:
+- `aeo status --business <id> declined|rejected --reason "..."` refuses to run without `--reason`.
+- The trigger writes the `status_change` row as usual. The reason is written as a `note` entry in `client_journal`, with `related_table = 'client_journal'`, `related_id` = that `status_change` row, and `details = {"reason_for": "<status>", "reason": "..."}`.
+- A decline at the gate also stores the reason in `gate_checks.decision_reason`, and writes the same journal note.
+- No new table, column or entry type is needed.
+
 ---
 
 ## 6. Prototype scope
@@ -200,7 +206,7 @@ Nothing runs a probe without a person typing `yes` in the CLI. No auto-approve.
 
 In manual mode the card only lists our own model calls (extraction, claim checking), since the engines are queried by hand.
 
-**On decline:** `gate_checks.decision = declined` with a reason, and the business status becomes `declined`. Nothing is deleted.
+**On decline:** `gate_checks.decision = declined` with a reason, and the business status becomes `declined`. The reason is also written to `client_journal` (section 5). Nothing is deleted.
 
 ---
 
@@ -513,7 +519,7 @@ aeo gate --business <id>             # business checks + cost card
 aeo probe --business <id> --type visibility|accuracy [--mode manual|automatic]
 aeo audit --business <id> [--reaudit]
 aeo recommend --business <id>
-aeo status --business <id> <status>
+aeo status --business <id> <status> [--reason "text"]   # --reason required for declined/rejected
 aeo mark-sent | mark-deployed | mark-published --business <id>
 aeo note --business <id> "text"
 aeo queue
@@ -543,5 +549,11 @@ Chosen to be as different as possible:
 - Scheduling
 
 ---
+
+---
+
+## Changelog
+
+- **29 Sep 2026 — v3.2.** Every move to `declined` or `rejected` requires a reason, recorded as a journal `note` linked to the `status_change` row (section 5). `aeo status` takes `--reason`, required for those two statuses (section 19). Gate declines also journal the reason (section 8).
 
 *This is the base plan. Changes to it are deliberate and dated.*
