@@ -1,8 +1,12 @@
 # AEOStudioAgents — Plan
 
-**Version 3.2 · 29 September 2026** (changes since 3.1 are listed in the changelog at the end)
+**Version 4.0 · 2 October 2026.** Changes since 3.2 are in the changelog at the end.
 
-Read this file before doing anything in this repository. It defines what we are building, the four prototype agents, the lifecycle, the database, and the rules. When a decision is not covered here, ask rather than assume.
+Read this file before doing anything in this repository. It is the source of truth. When a decision is not covered here, ask rather than assume.
+
+Two research documents sit behind this plan and should be read before building the thing they cover:
+- `research/AEO_PLAYBOOK.md` — what actually improves AI visibility, with evidence tiers
+- `research/PLATFORM_DELIVERY.md` — what can be delivered on each website platform
 
 ---
 
@@ -10,550 +14,448 @@ Read this file before doing anything in this repository. It defines what we are 
 
 AEO Studio helps businesses get named — and described correctly — by AI assistants: ChatGPT, Perplexity, Gemini, Google AI Overviews, Claude.
 
-This repository is the agent platform that does the repeatable work: understanding a business, measuring what AI says about it, finding what needs fixing, producing the fixes, and proving the results over time.
+This repository is the tooling that does the repeatable work: checking whether a business can be helped at all, measuring what AI says about them, producing the fixes, and proving the change over time.
 
-**It must work for any business with a website.** A dentist, a real estate agent, a startup, an event company, a retail store, a digital agency. Nothing may be hardcoded to one industry, one city, or one language. Canada first, English and French, designed to work anywhere.
+**It must work for any business with a website.** Nothing hardcoded to one industry, city or language. Canada first, English and French.
 
-**People stay in charge.** Agents draft, measure, and record. They never send, publish, or deploy anything. Nothing that costs money runs without human approval.
+**People stay in charge.** The tools draft, measure and record. They never send, publish or deploy. Nothing that costs money runs without a typed `yes`.
 
----
+### What changed in v4, and why
 
-## 2. The five goals
+v3.2 described four AI agents. Most of that work does not need judgement, and wrapping it in AI added cost, latency and non-determinism for nothing. **Platform detection is pattern matching. Crawler testing is HTTP status codes. Scoring is arithmetic. Building a robots.txt is a template.**
 
-Every agent serves one of these. If a proposed agent serves none of them, do not build it.
+v4 replaces four agents with **three scripts**, and uses AI only where the task genuinely needs judgement:
+- extracting which businesses were named in an AI answer
+- checking a claim against the client's confirmed facts
+- writing prose a person will read
 
-1. Do the prerequisites before AEO work starts — understand the business, measure where it stands, record a baseline.
-2. Support the actual AEO/GEO work — structured data and content that make a business understandable and citable to AI.
-3. Document every step and every result for each client, so the whole journey can be reconstructed.
-4. Turn results into case studies for future business.
-5. Find other businesses where AEO would make a big difference.
-
-Out of scope now: pricing, proposals, invoicing, email sending, CRM sync, outreach drafting.
+Everything else is plain Python.
 
 ---
 
-## 3. The two things AI must get right
+## 2. The journey
 
-| | Visibility | Accuracy |
+This is the commercial flow. Everything in the repo serves it.
+
+```
+1. DIAGNOSE          free, seconds, code only
+                     → internal report: can we help them, and how
+                     → verdict: serve / conditional / decline
+   ↓
+   decline → document it → ASK BEFORE pitching a migration
+   conditional → tell them the one thing that must change first
+   ↓
+2. DEPOSIT           status: prospect → client
+   ↓
+3. QUESTIONNAIRE     their confirmed facts → profile v2
+                     without this we cannot judge accuracy
+   ↓
+4. AUDIT             the paid work: ask the engines, record everything
+   ↓
+5. AUDIT REPORT      where they stand. Every question, every answer.
+                     NO fix plan in it.
+   ↓
+6. RECOMMEND         the fix list, ordered by what the audit showed
+   ↓
+7. THEY DEPLOY       we never touch a live site
+   ↓
+8. WAIT 4–6 WEEKS    engines need to re-read the site
+   ↓
+9. RE-AUDIT          same frozen questions. Before vs after.
+   ↓
+10. QUARTERLY        same questions again, forever
+```
+
+**The deposit moved.** In v3.2 the audit was free, given to prospects to win them. It is now paid work, because in manual mode it is hours of a person's time. The free hook is the diagnosis, which costs us nothing.
+
+**Most diagnosis fixes also help ordinary SEO.** Say so in the pitch — it widens the sale and it is true.
+
+---
+
+## 3. The three scripts
+
+### 3.1 `aeo diagnose <url>`
+
+**Plain Python. No AI except one step. No cost. Runs on any URL without the owner's cooperation.**
+
+What it does:
+
+1. **Detect the platform** from response headers and page source (section 4).
+2. **Test crawler reachability** — fetch as each retrieval bot plus a browser control, compare status, length and body hash.
+3. **Fetch robots.txt *as a bot***, parse it to RFC 9309, extract `Content-Signal`.
+4. **Check the render** — is the business name, phone, address and an `<h1>` in the no-JavaScript HTML?
+5. **Read existing structured data** — store the raw blocks.
+6. **Apply the decision rules** (section 5) → verdict.
+7. **Write findings** with stable codes (section 3.4).
+8. **Write the report** — a markdown file for us, plus a row in `diagnoses`.
+
+**The one AI step: explaining the verdict.** The rules decide; a model writes the paragraph. This split is deliberate — if the model decides, the answer changes between runs. The verdict is a lookup with a cited source attached; the model turns it into something sendable.
+
+**On a `decline` verdict the script stops.** It writes the report and the journal entry, sets the business to `declined` with a reason, and prints what a migration pitch would cover. It does **not** generate the pitch. A person types `yes` first.
+
+### 3.2 `aeo audit --business <id>`
+
+Two modes. **Manual is the default.**
+
+- **`manual`** — prints the frozen question set with the location to use. A person asks each engine by hand and pastes the answer back, naming the engine. No engine API cost.
+- **`batch`** — calls engine APIs directly. Requires a cost card and a typed `yes`. Built only after manual has run cleanly ten times.
+
+**Batch is not a better manual.** API answers overlap the real consumer interface by only 15–32% on which brands get named, and for Google surfaces source attribution is impossible through the API. Batch is a separate, cheaper, clearly-labelled series. **It is never merged into the same number as manual.** (`AEO_PLAYBOOK.md` §6.5.)
+
+Either mode: store the raw answer permanently, then derive. AI does two jobs — pull out which businesses were named, and mark each claim against profile v2 as correct / incorrect / unverifiable.
+
+### 3.3 `aeo recommend --business <id>`
+
+**Scope: on-page AEO.** The files that go on the client's own site, plus the document explaining them.
+
+Reads: profile v2, the audit, the open diagnosis findings, the live HTML.
+
+Writes:
+- `robots.txt`, `llms.txt`, validated JSON-LD
+- a markdown document: priority fixes in order, where each one goes **on their specific platform**, and what cannot be done there
+
+The platform routing comes from `research/PLATFORM_DELIVERY.md` as data, not from a prompt. A recommendation is allowed to be a refusal:
+
+> *"This is a Squarespace site. robots.txt cannot be edited at any plan tier. Revert to client: the only options are the all-or-nothing AI crawler checkbox in Settings → Crawlers, or putting Cloudflare in front of the domain."*
+
+**Priority order comes from the audit, not from our instincts.** The two deliverables everyone sells — JSON-LD and llms.txt — are the weakest levers in the evidence (`AEO_PLAYBOOK.md` §3 P2). They ship as cheap hygiene, last, labelled as unproven.
+
+Off-site work — earned media, directories, review platforms, Google Business Profile — is **out of scope for this script**. It is real work and it is where most of the evidence points, but it is human work, not file generation. The recommendations document names it; the script does not do it.
+
+### 3.4 Findings have stable codes
+
+Every diagnosis finding carries an identifier that never changes:
+
+```json
+{
+  "code": "SCHEMA_NAME_IS_LEGAL_ENTITY",
+  "severity": "high",
+  "what": "Structured data names the business '11297775 Canada Inc', not the brand",
+  "evidence": "\"name\": \"11297775 Canada Inc\"",
+  "fixable_on_platform": true,
+  "where_to_fix": "Squarespace → Settings → Business Information → Business Name",
+  "source": "research/PLATFORM_DELIVERY.md §4"
+}
+```
+
+**Why codes matter:** at each checkpoint we re-run and diff by code. "Eleven findings at baseline, eight closed, three open" — automatic, deterministic, no judgement, no AI, no sampling statistics. Same input, same answer, every time. This is the cheapest honest before/after proof we have.
+
+`fixable_on_platform` and `where_to_fix` are what make a finding actionable rather than academic.
+
+---
+
+## 4. Platform detection
+
+From response headers and raw HTML. No browser.
+
+**Tier 1 — infrastructure-emitted, the owner cannot remove:** `X-Wix-*` · `Server: Squarespace` · `x-hs-hub-id` · `x-shopify-stage` · `x-vercel-id` · `X-WPE-Loopback-Upstream-Addr` · vendor CDN hostnames (`static.parastorage.com`, `cdn.shopify.com`, `framerusercontent.com`, `dd-cdn.multiscreensite.com`, `*.website-files.com`, `/_next/static/`)
+
+**Tier 2 — structural, removable only by breaking the site:** `/wp-content/` · `Link: rel="https://api.w.org/"` · `html[data-wf-site]` · `meta[name=shopify-checkout-api-token]` · `/components/com_` · `Expires: 19 Nov 1978`
+
+**Tier 3 — trivially stripped or forged:** `meta generator` · `X-Powered-By` · `X-Pingback`
+
+**Never report a platform on a Tier 3 signal alone.** Require one Tier 1/2 hit, or two independent Tier 3 hits.
+
+**We write our own rules** for the platforms we serve. The maintained public fingerprint database is GPL-3.0, which is a licensing problem for commercial software, and it has gaps for exactly our list. *(Decision, 2 Oct 2026.)* The AI bot list we use (`ai-robots-txt/ai.robots.txt`) is MIT and safe to bundle.
+
+**Two discriminations that matter:** WordPress.com vs self-hosted (Jetpack injects the same CDN hostnames — require absence of same-origin `/wp-content/plugins/`), and HubSpot CMS vs a site merely running HubSpot tracking (`x-hs-hub-id` means hosted; `_hsq` alone does not).
+
+---
+
+## 5. Decision rules
+
+Every rule carries its source. The script cites the source in its output.
+
+### Decline — the work cannot be done
+
+| Platform | Why | Source |
 |---|---|---|
-| Buyer asks | About the category, not naming anyone | About the business by name |
-| Example | "Best water station providers in Canada?" / "Best clinic for a root canal?" / "Best web developer near me" | "Where does O'land Stations operate?" |
-| Question we answer | Does AI **name** them? | Is what AI says about them **true**? |
-| Question type | `category` | `brand` |
-| When it runs | Prospect stage, before the audit | Client stage, after the questionnaire |
-| Compared against | Nothing — we count who gets named | The client-confirmed facts (profile v2) |
-| Scores | Visibility Score, Gap Score | Accuracy Score, Recognition Rate |
+| **Google Sites** | Code embeds are iframed, so JSON-LD never reaches the parent document. No head access. No meta description field at all. No robots.txt control | Google embed docs; Steegle SEO guide, adapted from Google's own because much of it "is not possible with Google Sites, due to the security restrictions in place" |
+| **Notion-published** | A no-JavaScript fetch returns a 95-character shell: "JavaScript must be enabled in order to use Notion." No body text, no headings, no JSON-LD | Dated first-hand test, 10 Aug 2026, superblog.ai |
+| **Weebly** | Sites unpublished 27 Sep 2026; platform ends 2 Jan 2027 across 67 countries | Network Solutions discontinuation notice |
+| **GoDaddy Website Builder** | No site-wide head field. Custom HTML sections are almost certainly iframed — GoDaddy's own troubleshooting warns an AdSense snippet there "violates Google's policy," which only makes sense if iframed. No robots.txt control | GoDaddy support 27252, 28025 |
 
-Real example: ChatGPT says O'land Stations only works with Montreal clients. They actually serve the US and Canada. That is an accuracy error.
+### Conditional — possible after one specific thing changes
 
-**Accuracy only runs against client-confirmed facts.** A claim is only marked wrong if the correct fact comes from the client (profile v2). We never tell a client "AI is wrong about you" based on our own assumptions.
-
-**Where did the wrong fact come from?** Every AI answer stores the pages it cited. Often the wrong fact comes from the business's own website (e.g. the site never says it serves the US). The fix then is on their site, not a mistake by the AI.
-
-**Location matters for category questions.** Typing "near me" into ChatGPT by hand uses your own location. The API has no location at all. So every result records which location it assumed, and automatic mode always puts the place in the question ("…in Toronto").
-
----
-
-## 4. The Business Profile — the fact sheet
-
-The system does not know in advance what kind of business it is looking at, so it works it out from the website. The **Business Profile** is the first thing produced for any business and the object every other agent reads. It is also the answer key for the accuracy check.
-
-**There is no fixed list of business types.** Instead, every business is described by four traits:
-
-| Trait | What it is | Values | Used for |
+| Situation | Blocker | Fix | Source |
 |---|---|---|---|
-| `industry` | Plain description of what they do | Free text: "Dentistry", "Event water refill stations" | Reading, agent context |
-| `schema_type` | The official schema.org category | Any schema.org type: `Dentist`, `Plumber`, `OnlineStore`, `ProfessionalService`… | Which JSON-LD to generate; consistent grouping in SQL |
-| `customer_type` | Who buys | `consumers` / `businesses` / `both` | How buyers phrase questions |
-| `reach` | How far they serve | `local` / `regional` / `national` / `online` | Whether a place goes in the questions |
+| **Squarespace Basic** | No code injection at all | Upgrade to **Core, $29/mo annual** | "Code injection is available on the Core, Plus, Advanced, and some legacy billing plans" |
+| **WordPress.com Free** | No plugins, no custom code, no meta control | Upgrade to **Personal, ~$48/yr** | wordpress.com plan features |
+| **Framer Free/Basic** | robots.txt and llms.txt are Pro-gated | Upgrade to Pro | Framer: robots.txt via Static Files, "Pro and Enterprise" |
+| **AI crawlers blocked** | Bot UA gets 403/429, browser gets 200 | Fix at the edge first | Our own measurement |
+| **Client-rendered SPA** | Business name and phone absent from no-JS HTML | SSR/SSG — a separate project, priced separately | Vercel: "none of the major AI crawlers currently render JavaScript… OpenAI, Anthropic, Meta, ByteDance, Perplexity" |
+| **WP Engine hosting** | ClaudeBot got 429 on 60 of 60 requests; WP Engine states rate limiting "can't be selectively disabled per bot" | Escalate, or migrate host | Search Engine Land, April 2026 testing |
 
-Profiles are versioned:
-- **v1** — built from the public website by the profiler. Used for the prospect stage.
-- **v2** — built from the client questionnaire after signing. Client-confirmed. Used for the accuracy check and recommendations.
+### Serve
 
-Only the latest version is used downstream. All versions are kept.
+Everything else: Shopify (not Starter/Lite), self-hosted WordPress on a cooperative host, Drupal, Joomla, Webflow paid, Wix Light+, HubSpot, Duda, Framer Pro, Squarespace Core+, and any custom site that server-renders.
 
-**If the profile is wrong, everything downstream is wrong.**
+### The rule that overrides the table
 
----
+**Whatever the platform is, if the crawler test fails, that is the finding.** Cloudflare changed its defaults twice in fifteen months. **Measure, never look up.** The table explains a result and generates the right remediation text; it never predicts one.
 
-## 5. The lifecycle
+### Declining is a recorded decision
 
-```
-PROSPECT STAGE
- 1. Add business                     → businesses (status: prospect)
- 2. business-profiler reads website  → business_profiles v1
- 3. Gate check + cost card + "yes"   → gate_checks (approved, or declined → status: declined)
- 4. Visibility probe (category Qs)   → probe_runs (run_type: visibility) + probe_results
- 5. Scoring code                     → visibility_scores (visibility, gap, opportunity)
- 6. aeo-audit                        → audits (PDF) → you send it (aeo mark-sent)
- 7. They say no                      → status: rejected
-    They sign                        → status: client
-
-CLIENT STAGE
- 8. Questionnaire answered           → business_profiles v2 (client-confirmed facts)
- 9. Accuracy probe (brand Qs)        → probe_runs (run_type: accuracy) + probe_results with claims checked
-10. Scoring code                     → visibility_scores (accuracy, recognition)
-11. aeo-recommendations              → recommendations + content_pieces
-12. You deploy the fixes             → aeo mark-deployed
-13. Re-audit later (both run types)  → audits (mode: reaudit)
-14. Work complete                    → status: delivered
-
-EVERY STEP ALSO WRITES TO
-   runs           → every AI call and its cost
-   client_journal → what happened, when
-   human_queue    → anything that failed or needs a person
-```
-
-**Statuses** (on `businesses`):
-
-| Status | Meaning |
-|---|---|
-| `prospect` | Might become a client |
-| `client` | Work is ongoing |
-| `delivered` | Work is completed |
-| `rejected` | **They** said no to us |
-| `declined` | **We** said no to them (at the gate or any time later) |
-
-Progress within a stage (profiled, gated, probed, audited) is not a status — it is already recorded in its own table.
-
-**Every `declined` or `rejected` needs a reason.** *(added 29 Sep 2026)* The reason is required, never optional:
-- `aeo status --business <id> declined|rejected --reason "..."` refuses to run without `--reason`.
-- The trigger writes the `status_change` row as usual. The reason is written as a `note` entry in `client_journal`, with `related_table = 'client_journal'`, `related_id` = that `status_change` row, and `details = {"reason_for": "<status>", "reason": "..."}`.
-- A decline at the gate also stores the reason in `gate_checks.decision_reason`, and writes the same journal note.
-- No new table, column or entry type is needed.
+`businesses.status = declined` with a reason (section 7), a `diagnoses` row kept forever, and a journal entry. **Nothing is deleted.** A migration pitch is a separate, human-approved action.
 
 ---
 
-## 6. Prototype scope
+## 6. What we can and cannot promise
 
-**Priority: the audit.** First we measure O'land's current AEO — what AI says today and where it fails. Then we build the fixes. Then we ask the same questions again and compare.
+This section exists so nobody on this project ever writes a sentence we cannot defend.
 
-| Step | What | Agents |
-|---|---|---|
-| 1. Audit | What AI says about O'land today, and where it fails | ai-visibility-probe (manual), aeo-audit |
-| 2. Fix | The files that take O'land's AEO to the next level | aeo-recommendations |
-| 3. Compare | The same questions again — before vs after | ai-visibility-probe, aeo-audit (re-audit) |
+### We cannot guarantee an AI will name a business. Nobody can.
 
-**Real answers, not made-up ones.** O'land's audit uses real AI answers, collected by hand in manual mode (no engine API cost). Only the profile is hand-written for now — `seed/oland_stations/profile_v1.json`, in exactly the shape business-profiler will produce later. When the profiler is built, it replaces the hand-written file and nothing else changes.
+- Ask the identical question twice and **roughly half the recommended brands change** (Fractl, 11,573 answers)
+- Add one buyer qualifier and **62% of brands vanish** (Clovion, 69,120 conversations)
+- ChatGPT cited Reddit in **~60% of responses in Aug 2025 and ~10% by mid-Sep 2025**; nothing changed on Reddit (Semrush, 230,000 prompts)
+- **OpenAI has told a regulator it cannot correct false output** — it can block a term, not fix a fact
 
-**Built for any business.** O'land exists only in seed data. No code, prompt or template may mention O'land, events, water, or Montreal. The test: the dental practice must run through the same audit with nothing new except its own profile file.
+### What we can do, and it is the biggest lever that exists
 
-**Websites usually don't say it.** Most sites never clearly state what the business does, where it serves, or who it is for. That is expected — it is exactly what our on-page deliverables fix.
+When a company's page was **in the engine's retrieved set**, it appeared in **85–100%** of answers. When it was absent, model memory rescued it in **0–17 of 48** runs. Training-data volume explains only ~3.5% of what a model knows about a company. *(Fractl, 6,000+ controlled retrieval runs.)*
 
----
+And this applies where it matters: ChatGPT ran a live search on **86.5% of commercial questions** and **0.9% of informational ones** (Cloro, 634 responses).
 
-## 7. The four agents
+**So the job is not "make AI say our name." It is "when the engine goes looking, make sure our client's page is what it finds and reads."** That is a retrieval problem, and retrieval problems are fixable.
 
-### business-profiler
+### Working a target prompt
 
-**Purpose.** Turn a website into profile v1.
-**Input.** A website URL.
-**Output.** A `BusinessProfile`: the four traits, offering, services, buyers, location, service area, contact details, social profiles, languages, category questions, alternate names, apparent competitors, proof points.
-**Model.** Sonnet.
-**Notes.** Must handle thin sites, French sites, and businesses that do several things.
+1. **Pick commercial prompts.** Informational ones rarely trigger a search at all.
+2. **Find what is cited instead.** The audit records every answer's sources. That list is the brief.
+3. **Build the page that answers that exact question better** — name the business in the first sentence (96% of cited passages do, vs 82% of uncited), include real numbers and named quotes (statistics +33%, quotations +41%), and say something nobody else says. Restating the standard answer gets you **absorbed without being named** (61% of cited passages were distinctive vs 82% of uncited being consensus).
+4. **Get mentioned on the pages already being cited.** Earned media is 84% of AI citations; paid is 0.3%. Brand mentions correlate 0.664 with visibility; backlinks 0.218.
+5. **Re-measure on the frozen set.**
 
-### ai-visibility-probe
+**Optimise narrow, measure broad.** Targeting 5–10 prompts is correct for optimisation and wrong for measurement. Reporting only the prompts you optimised guarantees a flattering number — the most common way this industry misleads its own clients. The full frozen set is reported every time, with targets called out inside it.
 
-**Purpose.** Ask AI engines what buyers ask, and record exactly what they say.
-**Run types.**
-- `visibility` — category questions. Extracts every business named.
-- `accuracy` — brand questions, only after profile v2 exists. Breaks each answer into claims and marks each one against the v2 facts: `correct` / `incorrect` / `unverifiable`. Also records whether the AI recognised the business at all.
-**Modes.**
-- `manual` — the default. Prints the questions; a person runs them by hand and pastes the answers back.
-- `automatic` — calls the engine APIs. Built only after manual has run cleanly ten times.
-**Models.** Sonnet writes questions and checks claims (judgment). Haiku extracts named businesses (high volume).
-**Notes.** Before anything relies on it, run one business three times in one day and measure how much scores move.
+### The sentence we use
 
-### aeo-audit
+> *"Today AI says these specific wrong things about you, and names these competitors instead of you. We will fix what your site tells AI, get the correct version onto the sources AI actually reads, and measure the same questions again in three months. We cannot control what the models say — nobody can — but we can make sure that when they go looking, they find the truth."*
 
-**Purpose.** The client-facing visibility report. Proves the problem is real and records the starting point.
-**Input.** Profile + visibility probe run + scores.
-**Output.** Structured fields (section 12) stored in `audits.audit_data`, rendered to a PDF by a template. Includes the AI responses themselves — short quotes of what each engine actually said — so the client sees the problem in AI's own words.
-**Model.** Opus for the one summary paragraph. Everything else is data.
-**Rules.** Never states anything the probe data does not show. Never contains our fix plan. Re-audit mode compares against the baseline run and includes accuracy once it exists; it records what changed without claiming sole cause.
+### We refuse
 
-### aeo-recommendations
-
-**Purpose.** Specific, prioritised fixes a person can act on.
-**Input.** Latest profile + visibility run + the live site's HTML. Plus the accuracy run once it exists (after the questionnaire) — recommendations can run on visibility gaps alone first, and be re-run when accuracy results arrive.
-**Output.**
-- Priority fixes, ordered
-- For each wrong fact: where to state it on the site, the JSON-LD property (e.g. `areaServed`), an FAQ entry, and — if the wrong fact came from another website — that source, flagged for a person to correct
-- For each visibility gap: a content page draft, and the sites AI cited instead (places to get listed)
-- JSON-LD blocks (validated) and an `llms.txt` file
-- What existing markup is missing or wrong
-**Models.** Sonnet for schema. Opus for content.
-**Rules.** Always read existing JSON-LD before generating anything. Every content draft starts as `pending` and needs a human edit. Never touches a live site.
+Fake or incentivised reviews · astroturfing Reddit or forums · undisclosed paid Wikipedia editing · buying placement in "independent" listicles · fake or keyword-stuffed Google Business Profiles · hidden text, cloaking or prompt injection aimed at crawlers · attacking competitors · mass-generated content whose only purpose is to create mentions · **promising outcomes we cannot deliver.** Full reasoning in `AEO_PLAYBOOK.md` §10.
 
 ---
 
-## 8. The approval gate and cost card
+## 7. Statuses
 
-Nothing runs a probe without a person typing `yes` in the CLI. No auto-approve.
+`prospect` · `client` · `delivered` · `rejected` (**they** said no) · `declined` (**we** said no)
 
-**Business checks** (first visibility run only; plain Python, not AI):
-- Is the website reachable?
-- Is it a real, active business? (Reviews, verifiable address, recent activity.)
-- Is the site editable? (Can we actually fix it?)
+**Every move to `declined` or `rejected` needs a reason.** `aeo status --business <id> declined|rejected --reason "..."` refuses to run without `--reason`. The trigger writes the `status_change` row; the reason is a `note` entry in `client_journal` linked to it, with `details = {"reason_for": "<status>", "reason": "..."}`.
 
-**Cost card** (every probe run, manual or automatic). Facts, not estimates:
-- The exact questions that will be sent
-- Which engines
-- Number of AI calls, with the arithmetic shown
-- The model for each call
-- Ceiling cost: the most it could possibly cost if every call hits its token limit
-
-In manual mode the card only lists our own model calls (extraction, claim checking), since the engines are queried by hand.
-
-**On decline:** `gate_checks.decision = declined` with a reason, and the business status becomes `declined`. The reason is also written to `client_journal` (section 5). Nothing is deleted.
+Progress within a stage is not a status — each step is recorded in its own table.
 
 ---
 
-## 9. Database — 12 tables
+## 8. Measurement rules
 
-All tables use `uuid` primary keys (`gen_random_uuid()`). Every table links to `businesses` directly or through its parent, and has a `created_at`. Status-like fields use a fixed set of values (enforced by the database). Nothing is deleted. Simple lists use Postgres `text[]`; lists where each item has several parts use `jsonb`.
+The scores are easy to compute and easy to overstate. These rules exist to stop us overstating them.
 
-Migrations are append-only: never edit an applied migration, add a new numbered one.
+### The five scores — plain Python in `scoring/scoring.py`, never AI
 
-### Core records
+- `visibility_score` = answers naming the business ÷ total × 100
+- `gap_score` = answers naming a competitor but not the business ÷ total × 100
+- `opportunity_score` = 0.5 × gap + 0.3 × fixability + 0.2 × business reality
+- `accuracy_score` = correct ÷ (correct + incorrect) × 100 — unverifiable not counted
+- `recognition_rate` = answers where AI knew the business ÷ total brand answers × 100
 
-**1. businesses**
-```
-id, name, domain (unique, normalised: lowercase, no https://, no www.),
-website_url, status (prospect/client/delivered/rejected/declined),
-created_at (the date we found them), updated_at
-```
+Every score stores its `formula_version`. Weights and tiers in `scoring/config.yaml`.
 
-**2. business_profiles** — versioned; unique on (business_id, version)
-```
-id, business_id, version, source (website/client),
-industry, schema_type, customer_type (consumers/businesses/both),
-reach (local/regional/national/online),
-offering, services text[], buyer_description,
-location_city, location_region, location_country, service_area text[],
-address, phone, email, hours jsonb, social_profiles text[],
-languages text[], alternate_names text[], apparent_competitors text[],
-proof_points text[],
-questions jsonb       -- [{question, type: brand|category, language, location}]
-questionnaire_answers jsonb   -- v2 only, exactly as the client answered
-created_at
-```
+**Tiers, by lower edge** (scores are decimals; 19.4 is Invisible): below 20 Invisible · below 40 Barely Visible · below 60 Partially Visible · below 80 Visible · 80–100 Dominant.
 
-**3. gate_checks** — one row per approval before a probe run
-```
-id, business_id, run_type (visibility/accuracy), passed, signals jsonb,
-cost_card jsonb, ceiling_cost_usd, decision (pending/approved/declined),
-decision_reason, decided_at, created_at
-```
+### Three things every score must record
 
-### Measuring
+- **Brand-free rate.** An answer naming nobody is not the same as one naming a competitor. Report both denominators — all answers, and answers naming at least one business. The gap between them runs 1.4×–3.4×.
+- **Mentioned vs recommended.** Listed as an also-ran and proposed as the solution are different products. `recommendation_rate` is the one with commercial meaning.
+- **Retrieval activation.** Did the engine actually search? Without it we cannot tell a retrieval failure from a ranking failure.
 
-**4. probe_runs** — one session of asking the engines
-```
-id, business_id, business_profile_id, gate_check_id,
-run_type (visibility/accuracy), mode (manual/automatic),
-status (in_progress/complete/failed), started_at, completed_at
-```
+### Two designs, and we never confuse them
 
-**5. probe_results** — one row per question × engine × repeat. Never deleted.
-```
-id, probe_run_id, query_text, query_language, location_context, engine,
-repeat_number, raw_response_text, sources_cited jsonb,
-businesses_named jsonb,       -- visibility runs
-recognized boolean,           -- accuracy runs: did the AI know the business?
-claims_checked jsonb,         -- accuracy runs: [{claim, verdict, correct_fact, profile_field}]
-created_at
-```
-The raw answer is the source of truth. Extracted names and claim checks are derived from it and can be re-run later without asking the engines again.
+**Snapshot — the prospect-stage audit.** ~12 questions, up to 5 engines, one run. ~60 answers, about an hour. Labelled as a snapshot. **One overall figure with a visible range. No per-question claims, ever.**
 
-**6. visibility_scores** — computed by code; unique on (probe_run_id, formula_version)
-```
-id, probe_run_id, formula_version,
-visibility_score, gap_score, opportunity_score,   -- visibility runs
-accuracy_score, recognition_rate,                 -- accuracy runs
-tier, computed_at
-```
+**Before/after — the client-stage measurement.** 32 frozen questions, 2 engines (ChatGPT for reach, Perplexity because it always retrieves and so diagnoses cleanly), 3 runs each, same day, logged out, fresh session. **192 answers per checkpoint**, 3–4 hours by hand. About 10 of the 32 target parts of the site we deliberately do not touch — that is the control.
 
-### Outputs
+**This detects roughly a 20-point change, and not less.** Detecting 10 points needs ~750 answers per checkpoint. **We say so up front.** A single day's per-brand rate carries a ±63 percentage point confidence interval; 7–8 same-day repeats is the published minimum for a per-question estimate (Schulte et al., arXiv:2604.07585).
 
-**7. audits**
-```
-id, business_id, business_profile_id, probe_run_id,
-mode (initial/reaudit), comparison_probe_run_id,
-audit_data jsonb (all structured fields — the PDF is drawn from these),
-pdf_path, status (draft/approved/sent), created_at
-```
+**Every score ships with a range. We never report per-question numbers as findings.**
 
-**8. recommendations**
-```
-id, business_id, business_profile_id,
-visibility_probe_run_id, accuracy_probe_run_id (nullable until the accuracy run exists),
-priority_fixes jsonb, fact_fixes jsonb, off_site_sources jsonb,
-existing_jsonld jsonb, existing_schema_issues jsonb,
-generated_jsonld jsonb, llms_txt, validation_status, validation_errors jsonb,
-status (draft/reviewed/deployed), created_at
-```
+### The frozen question set
 
-**9. content_pieces** — several per recommendation
-```
-id, recommendation_id, target_query, cited_url, draft_markdown,
-edit_status (pending/approved/rejected), published_at, created_at
-```
+One versioned set, written **before** looking at where the client appears. Never edited — a change means a new version with an annotation. Every checkpoint reuses it. Paraphrasing a question changes the answer set more than re-asking it does, so the question string is part of the measurement.
 
-### Record-keeping
+### What is deterministic, and therefore our strongest proof
 
-**10. runs** — every AI call, no exceptions
-```
-id, business_id, agent, model, prompt_version, input jsonb, output jsonb,
-input_tokens, output_tokens, cost_usd, latency_ms,
-status (success/failed), error, created_at
-```
+The **diagnosis findings diff**. Same input, same answer, no sampling. "Eight of eleven findings closed" needs no confidence interval.
 
-**11. client_journal** — the story of each business. Append-only.
-```
-id, business_id, entry_type, description, actor (agent name or "human"),
-related_table, related_id, details jsonb, created_at
-```
-
-**12. human_queue** — things waiting for a person
-```
-id, business_id, item_type, reason, payload jsonb,
-status (pending/done/dismissed), resolution_note, created_at, resolved_at
-```
-
-### Which tables the prototype agents touch
-
-| Agent | Reads | Writes |
-|---|---|---|
-| aeo-audit | businesses, business_profiles, probe_runs, probe_results, visibility_scores | audits, runs, client_journal, human_queue |
-| aeo-recommendations | the same five + live site HTML | recommendations, content_pieces, runs, client_journal, human_queue |
+Second strongest: **accuracy**. Two independent studies found AI gets ~9–10% of facts about a business wrong (pricing worst at 13.5%), and 75% of brands checking 20+ facts found at least one error. That gives us ground truth and a published base rate. Visibility scores have neither.
 
 ---
 
-## 10. Logging the whole process
+## 9. Database — 13 tables
 
-Three layers, each answering a different question:
+All tables use uuid primary keys, link to `businesses`, and have `created_at`. Fixed value sets are enforced by the database. **Nothing is deleted.** Migrations are append-only and protected by SHA-256 checksums.
 
-| Layer | Answers |
-|---|---|
-| `runs` | What did the AI do, and what did it cost? |
-| `client_journal` | What happened to this business, and when? |
-| Output tables | What exactly was produced? |
+Unchanged from v3.2: `businesses`, `business_profiles`, `gate_checks`, `probe_runs`, `probe_results`, `visibility_scores`, `audits`, `recommendations`, `content_pieces`, `runs`, `client_journal`, `human_queue`.
 
-**Journal entry types:** `business_added`, `status_change`, `profile_created`, `questionnaire_received`, `gate_checked`, `gate_decision`, `probe_started`, `probe_completed`, `score_computed`, `audit_generated`, `audit_sent`, `recommendations_generated`, `schema_deployed`, `content_published`, `note`, `error`.
+### New: `diagnoses`
 
-**Two rules make it complete:**
-1. **Status changes log themselves.** A Postgres trigger writes a `status_change` row (with from/to in `details`) whenever `businesses.status` changes — even if changed with raw SQL.
-2. **Things done outside the system get a CLI command.** `aeo mark-sent`, `aeo mark-deployed`, `aeo mark-published`, `aeo note`. If it is not recorded, the case study cannot use it.
+```
+id, business_id, checkpoint, url, checked_at,
+platform, platform_version, platform_plan,
+robots_txt           text,    -- raw, exactly as served
+existing_jsonld      jsonb,   -- raw blocks, as found
+crawler_access       jsonb,   -- per bot: UA, status, verdict
+render               jsonb,   -- word count, h1 texts, which details present
+findings             jsonb,   -- [{code, severity, what, evidence, fixable_on_platform, where_to_fix, source}]
+verdict              (serve/conditional/decline),
+verdict_reason       text,
+readiness_score, created_at
+```
 
-All journal writes go through one function in `core/`.
+**Raw stored permanently; findings derived.** Same rule the probe already follows. If we improve a check in six months we re-run it against old raw data instead of losing history.
+
+### Changes to `probe_results`
+
+Add: `retrieval_activated`, `engine_version` (model **and** reasoning mode — Instant and Thinking share only 25.6% of sources and are effectively different engines), `logged_in_state`, `question_set_version`, `named_any_business`, `recommended`.
+
+### Changes to `probe_runs`
+
+Add `checkpoint` — `old_site` · `new_site_no_aeo` · `post_aeo` · `quarterly_YYYY_QN`.
+
+### Fix to `recommendations`
+
+Migration 008 has `accuracy_probe_run_id NOT NULL`, which contradicts this plan. Make it nullable.
+
+### Journal entry types
+
+Existing 16, plus `diagnosed` and `decline_recommended`.
+
+### Local setup
+
+Postgres 16 in Docker on **port 5434** (5432 and 5433 taken). Dev database `aeo`, test database `aeo_test`. **Tests refuse to run without `TEST_DATABASE_URL`.** Supabase later; same SQL.
 
 ---
 
-## 11. Scoring formulas
+## 10. Storage
 
-Plain Python in `scoring/scoring.py`. An AI never computes a final score. Every score stores its `formula_version`, so history can be recalculated. Weights and tier bands live in `scoring/config.yaml`.
+**Every report is kept, forever, for every checkpoint.** Before and after is not optional — it is the product.
 
-**Visibility Score (0–100)** — category questions
 ```
-visibility_score = answers naming the business / total answers × 100
-```
-
-**Gap Score (0–100)** — category questions
-```
-gap_score = answers naming a competitor but not the business / total answers × 100
-```
-
-**Opportunity Score (0–100)**
-```
-opportunity_score = 0.5 × gap_score + 0.3 × fixability_signal + 0.2 × business_reality_signal
-```
-Fixability and reality signals come from the gate check.
-
-**Accuracy Score (0–100)** — brand questions
-```
-accuracy_score = correct claims / (correct + incorrect claims) × 100
-```
-Unverifiable claims are not counted.
-
-**Recognition Rate (0–100)** — brand questions
-```
-recognition_rate = answers where the AI knew the business / total brand answers × 100
+reports/<business-slug>/<checkpoint>/
+    diagnosis.md
+    diagnosis.json
+    audit.md
+    audit.pdf
+    recommendations.md
+    generated/            robots.txt, llms.txt, schema.json
 ```
 
-**Tiers** (visibility): below 20 Invisible · 20 to below 40 Barely Visible · 40 to below 60 Partially Visible · 60 to below 80 Visible · 80–100 Dominant. Scores are decimals (e.g. 7 of 36 answers = 19.4), so bands are defined by their lower edge.
+Files are for humans. The database is the record. Both are written; neither is authoritative alone.
 
-A business is spotted in an answer by matching its `name` and `alternate_names`.
+**When a client wants a new website, diagnose and audit the old one first** — if budget allows and the cost is reasonable. Once the new site is live the old state is gone and no before/after is possible.
 
 ---
 
-## 12. Documents: structured fields, not essays
+## 11. Technical rules
 
-Agents fill in named fields. A template draws the PDF. Layout is code, not AI.
-
-**Audit fields:** business_name, report_date, visibility_score, visibility_tier, gap_score, questions_asked, engines_used, location_context, competitor_table (name, times named, engines), engine_breakdown (per engine: score, who appeared), response_excerpts (question, engine, short quote, who was named), summary_paragraph (the only free text). Re-audits add a before/after table, and accuracy_score, recognition_rate and wrong_facts once they exist.
-
-**Recommendations fields:** business_name, report_date, priority_fixes (what, why, action, expected impact), fact_fixes (AI says, truth, engine, source cited, fix), off_site_sources, schema_blocks, llms_txt, content_drafts (target question, draft, edit status), existing_schema_issues.
-
----
-
-## 13. The client questionnaire
-
-Sent after signing. The answers become profile v2 — the facts the accuracy check is measured against. Answers are stored exactly as given in `questionnaire_answers`.
-
-It asks the client to confirm or provide: official name and other names they go by, everything they sell, who buys, where they are based, **everywhere they serve**, address / phone / email / hours, social profiles, languages their customers use, competitors, proof points (years, notable clients, awards, certifications), and — most valuable — **the questions customers ask them before buying.**
-
----
-
-## 14. Manual probe mode (the default)
-
-1. The agent writes the questions.
-2. It prints them for copy-paste, with the location to use.
-3. A person asks each AI engine by hand and copies the answer.
-4. The person pastes the answers back into the CLI, noting the engine.
-5. The agent extracts names / checks claims, and the scoring code computes the scores.
-
-No engine API spend. `automatic` mode is built only after manual has run cleanly ten times.
-
----
-
-## 15. Prompts
-
-```
-prompts/
-  business-profiler/v1.md
-  ai-visibility-probe/v1.md
-  aeo-audit/v1.md
-  aeo-recommendations/v1.md
-  golden/<agent>/<business>.json   -- input + hand-checked ideal output
-```
-
-Never edit a prompt version after it has run; add a new version. Every AI call logs its prompt version. A pytest harness runs the golden examples and flags regressions.
-
----
-
-## 16. External services
-
-**AI engines** (automatic mode only):
-
-| Engine | Access | Note |
-|---|---|---|
-| ChatGPT | OpenAI API, web search on | Without search it answers from memory |
-| Perplexity | Perplexity API (Sonar) | Returns sources directly |
-| Gemini | Gemini API, grounding on | Same note as ChatGPT |
-| Google AI Overviews | DataForSEO or SerpAPI | No official API |
-| Claude | Anthropic API, web search | Already available |
-| Grok | xAI API | Optional, later |
-
-**Other:** Firecrawl or Jina Reader (reading websites) · Google Places API (business checks) · Brave Search or Serper (competitor lookup) · local Python validation for JSON-LD, Google Rich Results Test as a manual final check · Docker Postgres locally, Supabase later (same SQL) · Jinja2 + WeasyPrint for PDFs.
-
-**Not needed now:** email sending, CRM, payments, scheduling.
-
----
-
-## 17. Technical rules
-
-1. **One harness, four definitions.** `core/` is built once. Each agent is a definition: prompt, Pydantic output schema, tools, model.
-2. **No frameworks.** Anthropic SDK directly, with a simple tool-use loop in `core/llm.py`.
-3. **Store raw, compute later.** Full AI answers are kept; everything else is derived from them.
-4. **Scores are code, not prompts.**
-5. **Every AI call is logged** in `runs` before returning — no exceptions.
-6. **Structured output everywhere.** On validation failure: retry once with the error, then write to `human_queue` and stop.
-7. **Manual probe is the default.** Nothing costs money without a cost card and a typed `yes`.
-8. **Nothing is scheduled** until it has run cleanly by hand ten times.
-9. **Language follows the buyer.**
+1. **Scripts, not agents.** AI only for: extracting named businesses, checking claims, writing prose.
+2. **No frameworks.** Anthropic SDK directly.
+3. **Every AI call is logged** in `runs` with prompt version, tokens, cost and latency — including failures, before returning.
+4. **Structured output everywhere.** On validation failure: retry once with the error, then `human_queue` and stop.
+5. **Store raw, compute later.** Raw AI answers, raw robots.txt, raw JSON-LD. Everything else is derived and re-runnable.
+6. **Scores are code, never prompts.**
+7. **Manual is the default** and stays the primary instrument permanently. Batch is a separate labelled series.
+8. **Nothing costs money without a cost card and a typed `yes`.**
+9. **Nothing is scheduled** until it has run cleanly by hand ten times.
 10. **Migrations are append-only.**
-11. **Nothing is hardcoded to an industry, city, or language.** Everything reads from the profile.
-12. **Everything is analysable with SQL.** Fixed value sets, numbers as numbers, dates on everything, nothing deleted.
+11. **Nothing hardcoded to an industry, city or language.** O'land exists only in seed data — never in code, prompts or templates.
+12. **Everything analysable with SQL.** Fixed value sets, numbers as numbers, dates on everything, nothing deleted.
+13. **Never write to a client's live site.** We generate files; people deploy them.
+14. **Language follows the buyer.**
 
 ---
 
-## 18. Human checkpoints
+## 12. Human checkpoints
 
 | Always a person | Why |
 |---|---|
-| Approving any probe run (cost card) | Controls all spend |
+| Approving any spend | Controls all cost |
+| **Approving a migration pitch after a decline** | A decline is documented automatically; the pitch is a decision |
 | Declining a business | Our decision, recorded with a reason |
-| Sending the audit | Their name is on it |
+| Sending any report | Their name is on it |
 | Confirming facts (questionnaire) | Accuracy is only measured against client-confirmed facts |
-| Deploying schema / llms.txt | A broken tag on a live site is a real incident |
-| Publishing any content page | Unedited AI content under a client's name loses the client |
-| Correcting wrong facts on other websites | Needs the client's accounts and judgment |
-| Using a case study anywhere | Written client consent first |
+| Deploying anything | A broken tag on a live site is a real incident |
+| Publishing any content draft | Unedited AI content under a client's name loses the client |
+| Correcting facts on third-party sites | Needs their accounts and judgement |
+| Using a case study | Written consent first |
 
 ---
 
-## 19. Build order
+## 13. Build order
 
-0. **Scaffold** — folders, `pyproject.toml`, Docker Postgres, migrations for all 12 tables including the status trigger. No agent logic.
-1. **`core/`** — AI call wrapper with logging, database access, journal function, runner, error handling.
-2. **`scoring/`** — the five formulas as pure functions, with tests at every tier boundary.
-3. **Seed O'land** — `aeo add` + the hand-written profile v1.
-4. **ai-visibility-probe, manual mode, visibility run** — write category questions from the profile, print them, take pasted answers, store them raw, extract names, score.
-5. **aeo-audit** — produce the PDF from that run.
-6. **Run it for real on O'land** — this is the baseline. Then run the dental practice through the same steps to prove nothing is O'land-specific.
-7. **aeo-recommendations** — the fix files.
-8. **Accuracy run type** — after O'land's questionnaire.
-9. **business-profiler** — replaces the hand-written profiles.
-10. **Re-audit and compare.**
+| # | Step | Status |
+|---|---|---|
+| 0 | Scaffold, migrations 001–013, triggers | ✅ Done |
+| 1 | `core/`: db, llm, journal, runner, model prices | ✅ Done |
+| 2 | `scoring/`: five formulas, tier tests, test DB | ✅ Done (fixes pending) |
+| 3 | **Fixes:** migration 014 (nullable), lower-edge tiers, `.gitignore` | ⏭ Next |
+| 4 | **`aeo diagnose`** — detection, crawler test, robots, render, findings, report | |
+| 5 | Migration 015: `diagnoses` table, `probe_results` columns, `probe_runs.checkpoint`, 2 journal types | |
+| 6 | Seed O'land + the frozen question set | |
+| 7 | **`aeo audit`** manual mode | |
+| 8 | Real O'land baseline — **before the new site publishes** | |
+| 9 | Audit report output | |
+| 10 | **`aeo recommend`** | |
+| 11 | Re-audit and compare | |
 
 Stop after each step for review. Do not build ahead.
-
-### Definition of done for any agent
-
-- Pydantic output schema with named fields
-- Versioned prompt file
-- At least 3 golden examples and a passing golden test
-- Every AI call visible in `runs` with cost and latency
-- Journal entries written for what it did
-- Failures land in `human_queue`
-- A working CLI command
 
 ### CLI
 
 ```
-aeo add <url>                        # add a business (prospect)
-aeo profile --business <id>          # business-profiler
-aeo gate --business <id>             # business checks + cost card
-aeo probe --business <id> --type visibility|accuracy [--mode manual|automatic]
-aeo audit --business <id> [--reaudit]
+aeo diagnose <url> [--business <id>] [--checkpoint <name>]
+aeo audit --business <id> [--mode manual|batch] [--checkpoint <name>]
 aeo recommend --business <id>
-aeo status --business <id> <status> [--reason "text"]   # --reason required for declined/rejected
+aeo add <url>
+aeo seed <folder>
+aeo status --business <id> <status> [--reason "text"]
 aeo mark-sent | mark-deployed | mark-published --business <id>
 aeo note --business <id> "text"
 aeo queue
-aeo seed <folder>                    # load a hand-written profile, e.g. seed/oland_stations
 ```
 
 ---
 
-## 20. First test businesses
-
-Chosen to be as different as possible:
+## 14. First test businesses
 
 | Business | industry | schema_type | customer_type | reach |
 |---|---|---|---|---|
-| **O'land Stations** (olandstations.com) — first fixture, first client | Event water refill stations | LocalBusiness | businesses | national (US + Canada) |
+| **O'land Stations** (olandstations.com) — first client | Event water refill stations | Organization | businesses | national (US + Canada) |
 | A dental practice | Dentistry | Dentist | consumers | local |
-| An online store | e.g. outdoor footwear | OnlineStore | consumers | online |
-| A digital agency | Branding and design | ProfessionalService | businesses | national |
+| An online store | Outdoor footwear | OnlineStore | consumers | online |
+| A digital agency | Branding and design | *(specific subtype — `ProfessionalService` is deprecated)* | businesses | national |
+
+**O'land's diagnosis, 2 Oct 2026, old Squarespace site** — the first real findings, and the shape of what `diagnose` must produce:
+
+- Squarespace 7.1. Crawlers reachable, nothing blocked, AI checkbox off. `/llms.txt` 404s.
+- Structured data names the business **"11297775 Canada Inc"**, not the brand. The `Organization` block has `legalName` but **no `name` at all**.
+- `@type: LocalBusiness` with a Montreal address and **no `areaServed`** — for a business serving the US and Canada. ChatGPT says they only work with Montreal clients. The site is the most likely source.
+- Two `<h1>` tags, both apparently empty. 710 words on the homepage.
+- `openingHours: ", , , , , , "`. `sameAs` LinkedIn URL carries search tracking parameters. Three unlinked entity blocks.
 
 ---
 
-## 21. Later phases (decided, not built now)
+## 15. Later (decided, not now)
 
-- `confidence` and `evidence` fields on agent outputs, and routing by confidence
-- Automatic probe mode, batch runs, budgets, auto-runs (the design must allow these later)
-- Outreach, proposals, weekly reporter, case study generator, team ops agent
-- Scheduling
-
----
+`confidence`/`evidence` fields and routing · batch mode and budgets · off-site execution (earned media, directories, review platforms) · outreach, proposals, weekly reporter, case study generator · `business-profiler` · any scheduling.
 
 ---
 
 ## Changelog
 
-- **29 Sep 2026 — v3.2.** Every move to `declined` or `rejected` requires a reason, recorded as a journal `note` linked to the `status_change` row (section 5). `aeo status` takes `--reason`, required for those two statuses (section 19). Gate declines also journal the reason (section 8).
+- **2 Oct 2026 — v4.0.** Four agents replaced by three scripts (`diagnose`, `audit`, `recommend`); AI only for extraction, claim-checking and prose. Diagnosis added as a free, code-only qualification step with sourced serve/conditional/decline rules (§5); a decline is documented automatically and a migration pitch needs human approval. Deposit moved before the audit (§2). `diagnoses` table added, `probe_results` and `probe_runs` extended (§9). Measurement honesty rules made explicit — two designs, brand-free rate, mentioned vs recommended, retrieval activation, ranges on every score, the 20-point detection floor (§8). What we can and cannot promise written down (§6). Storage and checkpoints made a first-class requirement (§10). `business-profiler` deferred. Research documents added under `research/`.
+- **29 Sep 2026 — v3.2.** Reason required for `declined`/`rejected`, recorded as a journal note linked to the status change. `aeo status --reason`. Gate declines journal the reason.
 
-*This is the base plan. Changes to it are deliberate and dated.*
+*Changes to this plan are deliberate and dated.*
