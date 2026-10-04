@@ -14,4 +14,6 @@ __pycache__/
 runs/
 *.pdf
 MASTER_PROMPT.md
-MASTER_PROMPT.md # skip if you already ran it
+
+# Personal Claude Code settings (machine-specific)
+.claude/settings.local.json

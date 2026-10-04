@@ -107,6 +107,27 @@ def test_visibility_tier_boundaries(score, expected_tier):
     assert scoring.visibility_tier(score) == expected_tier
 
 
+# Scores are decimals, so the tier is decided by the LOWER edge of each band
+# ("below 20 is Invisible"), not by a whole-number upper limit.
+@pytest.mark.parametrize(
+    "score,expected_tier",
+    [
+        (19.4, "Invisible"),
+        (19.9, "Invisible"),
+        (20.0, "Barely Visible"),
+        (39.9, "Barely Visible"),
+        (40.0, "Partially Visible"),
+        (59.9, "Partially Visible"),
+        (60.0, "Visible"),
+        (79.9, "Visible"),
+        (80.0, "Dominant"),
+        (100.0, "Dominant"),
+    ],
+)
+def test_visibility_tier_decimal_boundaries(score, expected_tier):
+    assert scoring.visibility_tier(score) == expected_tier
+
+
 @pytest.mark.parametrize("bad_score", [-1, 100.01, 150])
 def test_visibility_tier_rejects_out_of_range_scores(bad_score):
     with pytest.raises(ValueError, match="between 0 and 100"):

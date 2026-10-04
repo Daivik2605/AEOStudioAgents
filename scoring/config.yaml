@@ -10,12 +10,14 @@ opportunity_score_weights:
   fixability_signal: 0.3
   business_reality_signal: 0.2
 
-# visibility_score (0-100) falls into the first band whose "max" it doesn't
-# exceed, in order. Bands must be listed low to high and the last one must
-# end at 100, or visibility_tier() has no answer for high scores.
+# Tiers are defined by their LOWER edge (PLAN.md section 8): a visibility_score
+# (0-100, decimals allowed) falls into the first band whose "below" it is
+# strictly under. So 19.4 is Invisible, and exactly 20.0 is Barely Visible.
+# Bands must be listed low to high. The last band uses .inf ("no upper limit")
+# so 80-100 is Dominant; visibility_tier() already rejects scores above 100.
 visibility_tiers:
-  - { max: 19, label: "Invisible" }
-  - { max: 39, label: "Barely Visible" }
-  - { max: 59, label: "Partially Visible" }
-  - { max: 79, label: "Visible" }
-  - { max: 100, label: "Dominant" }
+  - { below: 20, label: "Invisible" }
+  - { below: 40, label: "Barely Visible" }
+  - { below: 60, label: "Partially Visible" }
+  - { below: 80, label: "Visible" }
+  - { below: .inf, label: "Dominant" }

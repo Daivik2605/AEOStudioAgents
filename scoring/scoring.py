@@ -77,6 +77,6 @@ def visibility_tier(score: float) -> str:
     if not 0 <= score <= 100:
         raise ValueError(f"visibility_score must be between 0 and 100, got {score}")
     for band in _config()["visibility_tiers"]:
-        if score <= band["max"]:
+        if score < band["below"]:
             return band["label"]
     raise ValueError(f"no tier band in {CONFIG_PATH.name} covers score {score}")
