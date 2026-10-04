@@ -1,6 +1,6 @@
 # AEOStudioAgents — Plan
 
-**Version 4.0 · 2 October 2026.** Changes since 3.2 are in the changelog at the end.
+**Version 4.1 · 2 October 2026.** Changes since 4.0 are in the changelog at the end.
 
 Read this file before doing anything in this repository. It is the source of truth. When a decision is not covered here, ask rather than assume.
 
@@ -120,7 +120,17 @@ The platform routing comes from `research/PLATFORM_DELIVERY.md` as data, not fro
 
 **Priority order comes from the audit, not from our instincts.** The two deliverables everyone sells — JSON-LD and llms.txt — are the weakest levers in the evidence (`AEO_PLAYBOOK.md` §3 P2). They ship as cheap hygiene, last, labelled as unproven.
 
-Off-site work — earned media, directories, review platforms, Google Business Profile — is **out of scope for this script**. It is real work and it is where most of the evidence points, but it is human work, not file generation. The recommendations document names it; the script does not do it.
+Off-site work — earned media, directories, review platforms, Google Business Profile — is **out of scope for this script**. It is real work and it is where most of the evidence points, but it is human work, not file generation. The recommendations document names it, informed by `aeo brief`'s outreach list (§3.5); the script does not do it.
+
+**Before a drafted page is marked done, it is checked against the citability rules from §6 (one AI check, the rest mechanical):**
+
+- business name appears in the first sentence
+- at least one real, sourced statistic
+- at least one named quote
+- directly answers the target question in the first paragraph
+- **distinctive, not consensus** — does not just restate what `aeo brief` shows the already-cited pages saying (the one sub-check that needs a model, since "distinctive" is a judgement call)
+
+A draft that fails is flagged, not blocked — a human decides whether to revise or ship anyway.
 
 ### 3.4 Findings have stable codes
 
@@ -141,6 +151,26 @@ Every diagnosis finding carries an identifier that never changes:
 **Why codes matter:** at each checkpoint we re-run and diff by code. "Eleven findings at baseline, eight closed, three open" — automatic, deterministic, no judgement, no AI, no sampling statistics. Same input, same answer, every time. This is the cheapest honest before/after proof we have.
 
 `fixable_on_platform` and `where_to_fix` are what make a finding actionable rather than academic.
+
+### 3.5 `aeo brief --business <id>`
+
+**Plain SQL/Python. No AI. No new data collection — it only reads what `aeo audit` already stored.**
+
+This closes the two steps of "working a target prompt" (§6) that nothing else covers: *finding what's cited instead*, and *finding who to get mentioned by*. Both are the same query: group `probe_results.sources_cited` by question and count.
+
+For each target question, it prints:
+
+```
+"best water refill station suppliers for events in Canada" — 15 answers, O'land named in 2
+Cited: eventsupplierdirectory.ca ×7 · competitor-a.com ×6 · reddit.com/r/eventplanning ×4 · competitor-b.com ×3
+Not cited: olandstations.com
+```
+
+That one list is both deliverables:
+- **The content brief** — what the client's page has to beat to win that question.
+- **The outreach list** — candidate domains for `recommendations.off_site_sources`. Getting listed or mentioned on an already-cited domain is step 4 of working a target prompt, and it is still human work (outreach, pitching, submitting) — the script only tells us where to aim it.
+
+Run after an `aeo audit`, before `aeo recommend`, so the recommendation document's on-site fixes and its named off-site targets both come from the same evidence.
 
 ---
 
@@ -229,6 +259,8 @@ And this applies where it matters: ChatGPT ran a live search on **86.5% of comme
 
 **Optimise narrow, measure broad.** Targeting 5–10 prompts is correct for optimisation and wrong for measurement. Reporting only the prompts you optimised guarantees a flattering number — the most common way this industry misleads its own clients. The full frozen set is reported every time, with targets called out inside it.
 
+**This is enforced structurally, not by memory.** Every question in the frozen set carries an `intent` (commercial / informational / navigational) and an `is_target` flag (§9). `aeo audit` warns if a target is set on an informational question — those almost never trigger a search at all (0.9% vs 86.5%, Cloro) — and every report shows the full set with targets marked inside it, so there is no version of the report that shows only the 5–10 we worked on.
+
 ### The sentence we use
 
 > *"Today AI says these specific wrong things about you, and names these competitors instead of you. We will fix what your site tells AI, get the correct version onto the sources AI actually reads, and measure the same questions again in three months. We cannot control what the models say — nobody can — but we can make sure that when they go looking, they find the truth."*
@@ -316,9 +348,23 @@ readiness_score, created_at
 
 **Raw stored permanently; findings derived.** Same rule the probe already follows. If we improve a check in six months we re-run it against old raw data instead of losing history.
 
+### New: `questions`
+
+The frozen set was previously just text inside each probe result. It is now its own table so a question can carry metadata that outlives any one checkpoint:
+
+```
+id, question_set_version, text,
+intent         (commercial/informational/navigational),
+is_target      boolean,   -- one of the 5–10 we are optimising for, right now
+target_reason  text,      -- why, for our own record — not shown to the client as-is
+added_at
+```
+
+`aeo audit` warns before running if `is_target = true` on an `intent = informational` question. `aeo brief` and every audit report join against this table so the full set, with targets marked, is what always gets shown.
+
 ### Changes to `probe_results`
 
-Add: `retrieval_activated`, `engine_version` (model **and** reasoning mode — Instant and Thinking share only 25.6% of sources and are effectively different engines), `logged_in_state`, `question_set_version`, `named_any_business`, `recommended`.
+Add: `retrieval_activated`, `engine_version` (model **and** reasoning mode — Instant and Thinking share only 25.6% of sources and are effectively different engines), `logged_in_state`, `question_set_version`, `named_any_business`, `recommended`, `question_id` (references `questions.id` — replaces the inline question text).
 
 ### Changes to `probe_runs`
 
@@ -407,8 +453,10 @@ Files are for humans. The database is the record. Both are written; neither is a
 | 7 | **`aeo audit`** manual mode | |
 | 8 | Real O'land baseline — **before the new site publishes** | |
 | 9 | Audit report output | |
-| 10 | **`aeo recommend`** | |
-| 11 | Re-audit and compare | |
+| 9.5 | `questions` table (migration 016), tag the frozen set with intent + is_target | |
+| 10 | **`aeo brief`** — citation aggregation, content brief + outreach list | |
+| 11 | **`aeo recommend`** — includes the draft validator | |
+| 12 | Re-audit and compare | |
 
 Stop after each step for review. Do not build ahead.
 
@@ -417,6 +465,7 @@ Stop after each step for review. Do not build ahead.
 ```
 aeo diagnose <url> [--business <id>] [--checkpoint <name>]
 aeo audit --business <id> [--mode manual|batch] [--checkpoint <name>]
+aeo brief --business <id>
 aeo recommend --business <id>
 aeo add <url>
 aeo seed <folder>
@@ -455,6 +504,7 @@ aeo queue
 
 ## Changelog
 
+- **2 Oct 2026 — v4.1.** Added `aeo brief --business <id>` (§3.5) — pure SQL/Python aggregation of `sources_cited` already captured by `aeo audit`, giving both the content brief (what's winning a target question) and the outreach list (candidate domains for `recommendations.off_site_sources`), closing steps 2 and 4 of "working a target prompt" (§6) without any new AI calls. Added a `questions` table (§9) carrying `intent` (commercial/informational/navigational) and `is_target`, so targeting is tagged data rather than memory, and `aeo audit` warns against targeting informational questions. Added a draft-citability checklist to `aeo recommend` (§3.3) — name up front, a statistic, a quote, a direct answer, and one model-assisted distinctiveness check against `aeo brief`'s findings. Build order and CLI updated (§13).
 - **2 Oct 2026 — v4.0.** Four agents replaced by three scripts (`diagnose`, `audit`, `recommend`); AI only for extraction, claim-checking and prose. Diagnosis added as a free, code-only qualification step with sourced serve/conditional/decline rules (§5); a decline is documented automatically and a migration pitch needs human approval. Deposit moved before the audit (§2). `diagnoses` table added, `probe_results` and `probe_runs` extended (§9). Measurement honesty rules made explicit — two designs, brand-free rate, mentioned vs recommended, retrieval activation, ranges on every score, the 20-point detection floor (§8). What we can and cannot promise written down (§6). Storage and checkpoints made a first-class requirement (§10). `business-profiler` deferred. Research documents added under `research/`.
 - **29 Sep 2026 — v3.2.** Reason required for `declined`/`rejected`, recorded as a journal note linked to the status change. `aeo status --reason`. Gate declines journal the reason.
 
