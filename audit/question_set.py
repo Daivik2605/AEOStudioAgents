@@ -4,11 +4,15 @@
 
     note: optional free text
     questions:
-      - "first question, exactly as it will be typed into the engine"
-      - "second question"
+      - "a plain question, exactly as it will be typed into the engine"
+      - text: "a question with its tags"
+        intent: commercial        # optional: commercial / informational / navigational
+        is_target: true           # optional: one of the few we are optimising for
 
 The version is the file's name without ".yaml" (here: "oland-stations_v1"), so
 the file and its version can never disagree. The name must end in _v1, _v2 ...
+
+A plain string and a mapping with only "text" mean the same thing.
 
 A version is never edited once it has been used (PLAN.md section 8). Changing
 a question means writing _v2. We enforce that: every audit run records a
@@ -33,11 +37,32 @@ class QuestionSetError(Exception):
     """The file is missing, malformed, or was changed after it was used."""
 
 
+INTENTS = ("commercial", "informational", "navigational")
+
+
+@dataclass
+class Question:
+    text: str
+    intent: str | None = None
+    is_target: bool = False
+
+
 @dataclass
 class QuestionSet:
     version: str
-    questions: list[str]
-    fingerprint: str      # sha256 of the questions only, so comments and whitespace may change
+    items: list[Question]
+    fingerprint: str      # sha256 of the questions, intents and targets; comments and whitespace may change
+
+    @property
+    def questions(self) -> list[str]:
+        return [q.text for q in self.items]
+
+    def target_warnings(self) -> list[str]:
+        """A target on an informational question is allowed, but almost always a mistake."""
+        return [f"Target question is tagged informational: \"{q.text}\". Informational questions almost "
+                "never trigger a real engine search (ChatGPT searched on 0.9% of them vs 86.5% of commercial "
+                "ones; Cloro, PLAN.md section 6), so optimising for it is unlikely to show up in the audit."
+                for q in self.items if q.is_target and q.intent == "informational"]
 
 
 VERSION_RE = re.compile(r"^.+_v\d+$")
@@ -61,20 +86,41 @@ def load_question_set(path: str | Path) -> QuestionSet:
         raise QuestionSetError(f"{path.name} must have a 'questions:' list")
     extra = set(data) - {"questions", "note"}
     if extra:
-        # intent / is_target come later (PLAN.md step 9.5); ignoring them silently would hide a mistake.
+        # intent and is_target belong on each question, not at the top; ignoring a stray field would hide a mistake.
         raise QuestionSetError(f"{path.name} has fields not supported yet: {', '.join(sorted(extra))}")
 
-    questions = data["questions"]
-    if not isinstance(questions, list) or not questions:
+    raw = data["questions"]
+    if not isinstance(raw, list) or not raw:
         raise QuestionSetError(f"{path.name}: 'questions' must be a non-empty list")
-    if not all(isinstance(q, str) and q.strip() for q in questions):
-        raise QuestionSetError(f"{path.name}: every question must be non-empty text")
-    questions = [q.strip() for q in questions]
-    if len(set(questions)) != len(questions):
+    items = [_parse_question(path.name, entry) for entry in raw]
+    if len({q.text for q in items}) != len(items):
         raise QuestionSetError(f"{path.name}: the same question appears twice")
 
-    fingerprint = hashlib.sha256(json.dumps(questions, ensure_ascii=False).encode("utf-8")).hexdigest()
-    return QuestionSet(version=version, questions=questions, fingerprint=fingerprint)
+    # What the fingerprint covers. A question with no tags counts as its bare text, exactly as before
+    # tags existed, so sets already used keep their fingerprint. is_target false is the same as unset.
+    canonical = [q.text if (q.intent is None and not q.is_target)
+                 else {"text": q.text, "intent": q.intent, "is_target": q.is_target} for q in items]
+    fingerprint = hashlib.sha256(json.dumps(canonical, ensure_ascii=False).encode("utf-8")).hexdigest()
+    return QuestionSet(version=version, items=items, fingerprint=fingerprint)
+
+
+def _parse_question(filename: str, entry) -> Question:
+    if isinstance(entry, str):
+        entry = {"text": entry}
+    if not isinstance(entry, dict):
+        raise QuestionSetError(f"{filename}: every question must be text, or a mapping with 'text:'")
+    extra = set(entry) - {"text", "intent", "is_target"}
+    if extra:
+        raise QuestionSetError(f"{filename}: a question has fields not supported: {', '.join(sorted(extra))}")
+    text = entry.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise QuestionSetError(f"{filename}: every question must have non-empty text")
+    intent, target = entry.get("intent"), entry.get("is_target", False)
+    if intent is not None and intent not in INTENTS:
+        raise QuestionSetError(f"{filename}: intent must be one of {', '.join(INTENTS)} (got {intent!r})")
+    if not isinstance(target, bool):
+        raise QuestionSetError(f"{filename}: is_target must be true or false (got {target!r})")
+    return Question(text=text.strip(), intent=intent, is_target=target)
 
 
 def check_not_edited(conn: psycopg.Connection, qs: QuestionSet) -> None:

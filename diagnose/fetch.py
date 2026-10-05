@@ -38,6 +38,7 @@ class FetchResult:
     final_url: str = ""            # after redirects
     headers: dict[str, str] = field(default_factory=dict)  # lowercase names
     text: str = ""
+    body: bytes = field(default=b"", repr=False)   # the exact bytes read, for saving the raw page
     size: int = 0                  # body bytes actually read
     body_hash: str = ""            # sha256 of the body with whitespace collapsed
     error: str | None = None
@@ -111,6 +112,7 @@ class Fetcher:
                 result.status = response.status_code
                 result.final_url = str(response.url)
                 result.headers = _headers_to_dict(response.headers)
+                result.body = body
                 result.text = body.decode(response.charset_encoding or "utf-8", errors="replace")
                 result.size = len(body)
                 result.body_hash = hashlib.sha256(" ".join(result.text.split()).encode()).hexdigest()

@@ -41,7 +41,8 @@ def query(sql, params=()):
 def biz():
     """A real business made through `aeo add`'s own function, with a unique domain."""
     domain = f"audit-test-{uuid.uuid4().hex[:12]}.example"
-    return add_business(f"https://{domain}", name="Acme Refill")
+    # A unique name too: `aeo add` stops to ask when a name matches, and the test database keeps old rows.
+    return add_business(f"https://{domain}", name=f"Acme Refill {uuid.uuid4().hex[:10]}")
 
 
 @pytest.fixture
@@ -96,7 +97,7 @@ def audit(biz, qpath, op, client, checkpoint=None):
 
 def test_add_creates_a_prospect_with_an_empty_version_1_profile(biz):
     status, name, domain = query("SELECT status, name, domain FROM businesses WHERE id = %s", (biz["id"],))[0]
-    assert (status, name) == ("prospect", "Acme Refill")
+    assert (status, name) == ("prospect", biz["name"])
     version, source, phone, industry = query(
         "SELECT version, source, phone, industry FROM business_profiles WHERE business_id = %s", (biz["id"],))[0]
     assert (version, source, phone, industry) == (1, "client", None, None)
@@ -112,7 +113,7 @@ def test_add_refuses_a_domain_that_already_exists_and_changes_nothing(biz):
         add_business("https://www." + biz["domain"])
     assert query("SELECT count(*) FROM businesses WHERE domain = %s", (biz["domain"],))[0][0] == 1
     assert query("SELECT count(*) FROM business_profiles WHERE business_id = %s", (biz["id"],))[0][0] == 1
-    assert query("SELECT name FROM businesses WHERE id = %s", (biz["id"],))[0][0] == "Acme Refill"
+    assert query("SELECT name FROM businesses WHERE id = %s", (biz["id"],))[0][0] == biz["name"]
 
 
 def test_cli_add_duplicate_exits_with_a_clear_error(biz):
@@ -123,10 +124,11 @@ def test_cli_add_duplicate_exits_with_a_clear_error(biz):
 
 def test_cli_add_works_and_prints_the_id():
     domain = f"cli-add-{uuid.uuid4().hex[:12]}.example"
-    result = CliRunner().invoke(app, ["add", domain, "--name", "Cli Co"])
+    name = f"Cli Co {uuid.uuid4().hex[:8]}"
+    result = CliRunner().invoke(app, ["add", domain, "--name", name])
     assert result.exit_code == 0, result.output
     assert "Business id:" in result.output
-    assert query("SELECT name FROM businesses WHERE domain = %s", (domain,))[0][0] == "Cli Co"
+    assert query("SELECT name FROM businesses WHERE domain = %s", (domain,))[0][0] == name
 
 
 # ---- question set file --------------------------------------------------------
@@ -389,3 +391,218 @@ def test_cli_end_to_end_prints_the_short_summary(biz, qfile, monkeypatch):
     assert "Answers that recommended the business: 1" in result.output
     run_id = result.output.split("Run id: ")[1].strip()
     assert query("SELECT checkpoint, status FROM probe_runs WHERE id = %s", (run_id,))[0] == ("old_site", "complete")
+
+
+# ---- intent / is_target in the question set -----------------------------------
+
+def write_tagged(path, entries):
+    """entries: list of strings, or dicts of text/intent/is_target."""
+    import yaml
+    path.write_text(yaml.safe_dump({"questions": entries}, sort_keys=False, allow_unicode=True))
+    return path
+
+
+def test_tags_are_read_and_plain_questions_still_work(tmp_path):
+    path = write_tagged(tmp_path / "t_v1.yaml", [
+        {"text": Q1, "intent": "commercial", "is_target": True}, Q2, {"text": "third"}])
+    qs = load_question_set(path)
+    assert [(q.text, q.intent, q.is_target) for q in qs.items] == [
+        (Q1, "commercial", True), (Q2, None, False), ("third", None, False)]
+    assert qs.questions == [Q1, Q2, "third"]
+
+
+@pytest.mark.parametrize("entry, message", [
+    ({"text": "a", "intent": "shopping"}, "intent must be one of"),
+    ({"text": "a", "is_target": "yes"}, "true or false"),
+    ({"text": "a", "colour": "red"}, "not supported"),
+    ({"intent": "commercial"}, "non-empty text"),
+])
+def test_bad_tags_are_refused(tmp_path, entry, message):
+    with pytest.raises(QuestionSetError, match=message):
+        load_question_set(write_tagged(tmp_path / "t_v1.yaml", [entry]))
+
+
+def test_a_set_with_no_tags_keeps_the_fingerprint_it_had_before_tags_existed(tmp_path):
+    """Sets already used in a real audit must not suddenly look 'edited'."""
+    import hashlib
+    path = write_tagged(tmp_path / "t_v1.yaml", [Q1, {"text": Q2}, {"text": "c", "is_target": False}])
+    old_style = hashlib.sha256(json.dumps([Q1, Q2, "c"], ensure_ascii=False).encode()).hexdigest()
+    assert load_question_set(path).fingerprint == old_style
+
+
+def test_a_target_on_an_informational_question_warns_and_the_run_still_happens(biz, tmp_path):
+    path = write_tagged(tmp_path / f"w{uuid.uuid4().hex[:8]}_v1.yaml", [
+        {"text": "what is a refill station", "intent": "informational", "is_target": True},
+        {"text": Q1, "intent": "commercial", "is_target": True},
+        {"text": Q2, "intent": "informational", "is_target": False}])      # not a target: no warning
+    # Answer the first question on both engines, then quit: the run must have started.
+    op = Operator(["y", ""] + answer("a") + answer("b") + ["/quit"])
+    out = audit(biz, path, op, FakeAnthropicClient([extraction(), extraction()]))
+    warned = [s for s in op.said if s.startswith("WARNING")]
+    assert len(warned) == 1 and "what is a refill station" in warned[0]
+    assert "0.9%" in warned[0] and "86.5%" in warned[0]
+    assert Q1 not in warned[0] and Q2 not in warned[0]
+    assert out.warnings == [w[len("WARNING: "):] for w in warned]
+    assert out.counts["answers"] == 2                                   # it ran
+
+
+def test_the_warning_comes_before_the_run_starts(biz, tmp_path):
+    path = write_tagged(tmp_path / f"w{uuid.uuid4().hex[:8]}_v1.yaml",
+                        [{"text": "info", "intent": "informational", "is_target": True}])
+    op = Operator(["y", "", "/quit"])
+    seen_when_asked = []
+    original_ask = op.ask
+    op.ask = lambda prompt: (seen_when_asked.append(any(s.startswith("WARNING") for s in op.said)), original_ask(prompt))[1]
+    audit(biz, path, op, FakeAnthropicClient([]))
+    assert seen_when_asked and all(seen_when_asked)
+
+
+@pytest.mark.parametrize("edit", [
+    lambda e: {**e, "intent": "informational"},              # intent changed
+    lambda e: {k: v for k, v in e.items() if k != "intent"},   # intent removed
+    lambda e: {**e, "is_target": False},                     # target flag changed
+])
+def test_changing_tags_on_a_used_version_is_refused_like_changing_text(biz, tmp_path, edit):
+    path = tmp_path / f"lock{uuid.uuid4().hex[:8]}_v1.yaml"
+    entry = {"text": Q1, "intent": "commercial", "is_target": True}
+    write_tagged(path, [entry])
+    audit(biz, path, Operator(["y", ""] + answer("a") + answer("b")), FakeAnthropicClient([extraction(), extraction()]))
+    write_tagged(path, [edit(entry)])
+    with pytest.raises(AuditError, match="never edited.*_v2"):
+        audit(biz, path, Operator([]), FakeAnthropicClient([]))
+    write_tagged(path, [entry])                                  # put it back: allowed again
+    audit(biz, path, Operator(["y", "", "/quit"]), FakeAnthropicClient([]))
+
+
+def test_adding_tags_to_an_untagged_used_version_is_also_refused(biz, tmp_path):
+    path = write_tagged(tmp_path / f"lock{uuid.uuid4().hex[:8]}_v1.yaml", [Q1])
+    audit(biz, path, Operator(["y", ""] + answer("a") + answer("b")), FakeAnthropicClient([extraction(), extraction()]))
+    write_tagged(path, [{"text": Q1, "intent": "commercial"}])
+    with pytest.raises(AuditError, match="never edited"):
+        audit(biz, path, Operator([]), FakeAnthropicClient([]))
+
+
+# ---- aeo add: duplicates ------------------------------------------------------
+
+@pytest.fixture
+def named():
+    """An existing business with a unique name, and a helper that runs `aeo add` against it."""
+    name = f"Dup Test {uuid.uuid4().hex[:10]}"
+    existing = add_business(f"https://{uuid.uuid4().hex[:10]}-old.example", name=name)
+
+    def run(args, *, interactive, answer_text=""):
+        import aeo.cli
+        aeo.cli._is_interactive = lambda: interactive
+        return CliRunner().invoke(app, ["add", *args], input=answer_text)
+    return existing, name, run
+
+
+@pytest.fixture(autouse=True)
+def _restore_interactive():
+    import aeo.cli
+    original = aeo.cli._is_interactive
+    yield
+    aeo.cli._is_interactive = original
+
+
+def count_with_name(name):
+    return query("SELECT count(*) FROM businesses WHERE name = %s", (name,))[0][0]
+
+
+def test_a_matching_domain_names_the_existing_business(named):
+    existing, name, run = named
+    for flags in ([], ["--force-new"], ["--same-business", existing["id"]]):
+        result = run([existing["domain"], "--name", name, *flags], interactive=True)
+        assert result.exit_code == 1
+        assert f"{existing['domain']} is already added, as {name} (id {existing['id']}" in result.output
+        assert "Nothing was changed" in result.output
+    assert count_with_name(name) == 1                 # --force-new did not create a duplicate
+
+
+def test_a_matching_domain_wins_even_when_the_name_is_different(named):
+    existing, name, run = named
+    result = run([existing["domain"], "--name", "Something Else Entirely"], interactive=True)
+    assert result.exit_code == 1 and existing["id"] in result.output
+
+
+def test_same_name_other_domain_asks_and_yes_creates_nothing(named):
+    existing, name, run = named
+    new_domain = f"{uuid.uuid4().hex[:10]}-new.example"
+    result = run([new_domain, "--name", name], interactive=True, answer_text="y\n")
+    assert result.exit_code == 0, result.output
+    assert f"already exists (id {existing['id']}, domain {existing['domain']})" in result.output
+    assert "[y/N]" in result.output
+    assert f"business id {existing['id']}" in result.output and "from now on" in result.output
+    assert count_with_name(name) == 1
+    assert query("SELECT count(*) FROM businesses WHERE domain = %s", (new_domain,))[0][0] == 0
+    assert query("SELECT domain FROM businesses WHERE id = %s", (existing["id"],))[0][0] == existing["domain"]
+
+
+@pytest.mark.parametrize("reply", ["n\n", "\n"])
+def test_same_name_other_domain_no_or_enter_creates_a_new_business(named, reply):
+    existing, name, run = named
+    new_domain = f"{uuid.uuid4().hex[:10]}-new.example"
+    result = run([new_domain, "--name", name], interactive=True, answer_text=reply)
+    assert result.exit_code == 0, result.output
+    assert "Business id:" in result.output
+    assert count_with_name(name) == 2
+
+
+def test_non_interactive_refuses_a_name_match_and_names_the_existing_id(named):
+    existing, name, run = named
+    new_domain = f"{uuid.uuid4().hex[:10]}-new.example"
+    result = run([new_domain, "--name", name], interactive=False)
+    assert result.exit_code == 1
+    assert existing["id"] in result.output and "--same-business" in result.output and "--force-new" in result.output
+    assert count_with_name(name) == 1
+
+
+def test_same_business_flag_confirms_the_match_without_asking(named):
+    existing, name, run = named
+    result = run([f"{uuid.uuid4().hex[:10]}-new.example", "--name", name, "--same-business", existing["id"]],
+                 interactive=False)
+    assert result.exit_code == 0, result.output
+    assert existing["id"] in result.output and count_with_name(name) == 1
+
+
+def test_same_business_with_an_id_that_is_not_a_name_match_is_refused(named):
+    existing, name, run = named
+    other = add_business(f"https://{uuid.uuid4().hex[:10]}-other.example", name=f"Other {uuid.uuid4().hex[:8]}")
+    result = run([f"{uuid.uuid4().hex[:10]}-new.example", "--name", name, "--same-business", other["id"]],
+                 interactive=False)
+    assert result.exit_code == 1 and "not one of the businesses named" in result.output
+    assert count_with_name(name) == 1
+
+
+def test_force_new_confirms_it_is_a_different_business_without_asking(named):
+    existing, name, run = named
+    result = run([f"{uuid.uuid4().hex[:10]}-new.example", "--name", name, "--force-new"], interactive=False)
+    assert result.exit_code == 0, result.output
+    assert count_with_name(name) == 2
+
+
+def test_the_two_flags_together_are_refused(named):
+    existing, name, run = named
+    result = run([f"{uuid.uuid4().hex[:10]}-new.example", "--name", name, "--force-new",
+                  "--same-business", existing["id"]], interactive=False)
+    assert result.exit_code == 1 and "contradict" in result.output and count_with_name(name) == 1
+
+
+def test_the_flags_do_nothing_when_no_name_matches(named):
+    existing, name, run = named
+    for flag in (["--force-new"], ["--same-business", existing["id"]]):
+        fresh_name = f"Fresh {uuid.uuid4().hex[:10]}"
+        result = run([f"{uuid.uuid4().hex[:10]}-new.example", "--name", fresh_name, *flag], interactive=False)
+        assert result.exit_code == 0 and count_with_name(fresh_name) == 1, result.output
+
+
+def test_no_name_given_means_no_name_check(named):
+    existing, name, run = named
+    result = run([f"{uuid.uuid4().hex[:10]}-new.example"], interactive=False)
+    assert result.exit_code == 0 and "Business id:" in result.output
+
+
+def test_name_matching_ignores_case_and_spaces(named):
+    existing, name, run = named
+    result = run([f"{uuid.uuid4().hex[:10]}-new.example", "--name", f"  {name.upper()} "], interactive=False)
+    assert result.exit_code == 1 and existing["id"] in result.output

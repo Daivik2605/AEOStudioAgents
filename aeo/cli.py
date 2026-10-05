@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import sys
 import textwrap
 from typing import Optional
 
 import typer
 
 from audit.manual import AuditError, run_manual_audit
-from core.businesses import BusinessError, add_business
+from core.businesses import BusinessError, add_with_checks
 from diagnose import platform_data as pd
 from diagnose.report import decline_pitch_outline
 from diagnose.run import DiagnoseError, run_diagnosis
@@ -81,20 +82,34 @@ def diagnose(
         else:
             typer.echo("No business was given, so no status was changed.")
 
-    typer.echo(f"\nReport: {out.report_dir}/diagnosis.md")
+    typer.echo(f"\nReport (run {out.run_number}): {out.report_dir}/diagnosis.md")
+
+
+def _is_interactive() -> bool:
+    return sys.stdin.isatty()
 
 
 @app.command()
 def add(
     url: str = typer.Argument(..., help="The business's website, e.g. https://example.com"),
     name: Optional[str] = typer.Option(None, "--name", help="The business's name."),
+    same_business: Optional[str] = typer.Option(None, "--same-business", help="Id of an existing business with this name: confirms this is it, adds nothing."),
+    force_new: bool = typer.Option(False, "--force-new", help="Confirms this is a different business from one with the same name."),
 ) -> None:
     """Add a business (status: prospect) with an empty profile, so it can be diagnosed and audited."""
     try:
-        b = add_business(url, name)
+        result = add_with_checks(url, name, same_business=same_business, force_new=force_new,
+                                 interactive=_is_interactive(),
+                                 confirm=lambda question: typer.confirm(question, default=False))
     except BusinessError as exc:
         typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
+    b = result.business
+    if not result.created:
+        typer.echo(f"Nothing was added: {b['name']} is already here as business id {b['id']} ({b['domain']}).")
+        typer.echo("Use that id from now on. Its web address was not changed; if the address has moved, "
+                   "that is a decision for a person to make on purpose.")
+        return
     typer.echo(f"Added {b['name'] or b['domain']} ({b['domain']}), status: prospect")
     typer.echo(f"Business id: {b['id']}")
     typer.echo("The profile is empty: no facts have been confirmed yet.")

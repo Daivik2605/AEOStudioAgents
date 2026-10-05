@@ -348,23 +348,25 @@ readiness_score, created_at
 
 **Raw stored permanently; findings derived.** Same rule the probe already follows. If we improve a check in six months we re-run it against old raw data instead of losing history.
 
-### New: `questions`
+### No `questions` table (v4.2 revision)
 
-The frozen set was previously just text inside each probe result. It is now its own table so a question can carry metadata that outlives any one checkpoint:
+v4.1 planned a `questions` database table just to hold two flags (`intent`, `is_target`) per question. Simplified: those two fields live directly in the frozen question-set YAML file instead (`question_sets/<slug>_v<N>.yaml`), next to each question's text — no table, no migration, no foreign key:
 
+```yaml
+questions:
+  - text: "best water refill stations for outdoor events in Canada"
+    intent: commercial
+    is_target: true
+  - text: "what is a water refill station"
+    intent: informational
+    is_target: false
 ```
-id, question_set_version, text,
-intent         (commercial/informational/navigational),
-is_target      boolean,   -- one of the 5–10 we are optimising for, right now
-target_reason  text,      -- why, for our own record — not shown to the client as-is
-added_at
-```
 
-`aeo audit` warns before running if `is_target = true` on an `intent = informational` question. `aeo brief` and every audit report join against this table so the full set, with targets marked, is what always gets shown.
+`aeo audit` reads this file and warns before running if `is_target: true` is set on an `intent: informational` question. `aeo brief` and every audit report read the same file so the full set, with targets marked, is what always gets shown. The file is already version-locked once used (a hash of its questions is recorded at the start of each run); that same lock now covers `intent`/`is_target` too, so they can't quietly change after a baseline is measured.
 
 ### Changes to `probe_results`
 
-Add: `retrieval_activated`, `engine_version` (model **and** reasoning mode — Instant and Thinking share only 25.6% of sources and are effectively different engines), `logged_in_state`, `question_set_version`, `named_any_business`, `recommended`, `question_id` (references `questions.id` — replaces the inline question text).
+Add: `retrieval_activated`, `engine_version` (model **and** reasoning mode — Instant and Thinking share only 25.6% of sources and are effectively different engines), `logged_in_state`, `question_set_version`, `named_any_business`, `recommended`. (Already done — migration 016. No `question_id` column; `question_set_version` plus the stored `query_text` is enough without a `questions` table.)
 
 ### Changes to `probe_runs`
 
@@ -453,7 +455,7 @@ Files are for humans. The database is the record. Both are written; neither is a
 | 7 | **`aeo audit`** manual mode | |
 | 8 | Real O'land baseline — **before the new site publishes** | |
 | 9 | Audit report output | |
-| 9.5 | `questions` table (migration 017 — 016 was used by Steps 6–7⟦aeo add / aeo audit⟧), tag the frozen set with intent + is_target | |
+| 9.5 | ~~`questions` table~~ — dropped (v4.2); `intent`/`is_target` live in the question-set YAML file instead, already supported once that file format is extended | |
 | 10 | **`aeo brief`** — citation aggregation, content brief + outreach list | |
 | 11 | **`aeo recommend`** — includes the draft validator | |
 | 12 | Re-audit and compare | |
@@ -504,6 +506,7 @@ aeo queue
 
 ## Changelog
 
+- **5 Oct 2026 — v4.2.** Dropped the `questions` database table from v4.1. `intent` and `is_target` now live as fields directly in the frozen question-set YAML file (§9), not a separate table — same protection (warn against targeting an informational question, always show the full set with targets marked), no new migration or foreign key. `probe_results` keeps `question_set_version` + `query_text` instead of a `question_id` FK.
 - **5 Oct 2026 — implementation note.** Steps 6–7 (`aeo add`, `aeo audit --mode manual`) built and used migration number 016, which §13⟦step 9.5⟧ had reserved for the future `questions` table. That table is now migration 017. No plan content changed, just the number.
 - **2 Oct 2026 — v4.1.** Added `aeo brief --business <id>` (§3.5) — pure SQL/Python aggregation of `sources_cited` already captured by `aeo audit`, giving both the content brief (what's winning a target question) and the outreach list (candidate domains for `recommendations.off_site_sources`), closing steps 2 and 4 of "working a target prompt" (§6) without any new AI calls. Added a `questions` table (§9) carrying `intent` (commercial/informational/navigational) and `is_target`, so targeting is tagged data rather than memory, and `aeo audit` warns against targeting informational questions. Added a draft-citability checklist to `aeo recommend` (§3.3) — name up front, a statistic, a quote, a direct answer, and one model-assisted distinctiveness check against `aeo brief`'s findings. Build order and CLI updated (§13).
 - **2 Oct 2026 — v4.0.** Four agents replaced by three scripts (`diagnose`, `audit`, `recommend`); AI only for extraction, claim-checking and prose. Diagnosis added as a free, code-only qualification step with sourced serve/conditional/decline rules (§5); a decline is documented automatically and a migration pitch needs human approval. Deposit moved before the audit (§2). `diagnoses` table added, `probe_results` and `probe_runs` extended (§9). Measurement honesty rules made explicit — two designs, brand-free rate, mentioned vs recommended, retrieval activation, ranges on every score, the 20-point detection floor (§8). What we can and cannot promise written down (§6). Storage and checkpoints made a first-class requirement (§10). `business-profiler` deferred. Research documents added under `research/`.

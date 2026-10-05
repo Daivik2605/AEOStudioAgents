@@ -49,6 +49,7 @@ class DiagnosisOutcome:
     ai_explanation: str | None = None
     decline_result: str | None = None     # declined | already_declined | not_a_prospect | None
     warnings: list[str] = field(default_factory=list)
+    run_number: int = 1
 
 
 def normalise_url(raw: str) -> str:
@@ -182,7 +183,10 @@ def _run(url, business, conn, checkpoint, fetcher, reports_root, explain_client,
         db_error = exc
 
     data["diagnosis_id"] = diagnosis_id
-    folder = report.write_report(data=data, slug=slug, checkpoint=checkpoint, root=reports_root)
+    # The exact bytes of the no-JavaScript control fetch: the same page the render check and
+    # structured-data extraction just read.
+    folder, run_number = report.write_report(data=data, slug=slug, checkpoint=checkpoint, day=now.date(),
+                                             raw_page=page.body or None, root=reports_root)
 
     if db_error is not None:
         if business:
@@ -191,7 +195,8 @@ def _run(url, business, conn, checkpoint, fetcher, reports_root, explain_client,
 
     return DiagnosisOutcome(facts=facts, verdict=verdict, findings=findings, readiness=readiness,
                             report_dir=folder, data=data, diagnosis_id=diagnosis_id,
-                            ai_explanation=ai_text, decline_result=decline_result, warnings=warnings)
+                            ai_explanation=ai_text, decline_result=decline_result, warnings=warnings,
+                            run_number=run_number)
 
 
 def facts_names(business: dict | None) -> list[str] | None:

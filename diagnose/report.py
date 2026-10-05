@@ -1,19 +1,20 @@
 """Writes the diagnosis report: diagnosis.md and diagnosis.json under
 reports/<business-slug>/<checkpoint>/ (PLAN.md section 10).
 
-Reports are kept forever. If a report already exists for that checkpoint, it
-is renamed with a timestamp (never overwritten, never deleted) before the new
-one is written.
+Reports are kept forever: every run is written as a numbered, dated copy
+(diagnosis_run2_2026-10-05.md), plus an overwritten "latest" copy with no number.
+See core/report_files.py.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
+from datetime import date
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from core.report_files import write_run_files
 from diagnose import RULES_VERSION
 from diagnose import platform_data as pd
 from diagnose.codes import SEVERITIES
@@ -202,20 +203,15 @@ def build_markdown(data: dict) -> str:
     return "\n".join(lines)
 
 
-def write_report(*, data: dict, slug: str, checkpoint: str | None, root: Path = REPORTS_ROOT) -> Path:
-    """Writes diagnosis.md and diagnosis.json. Returns the folder."""
+def write_report(*, data: dict, slug: str, checkpoint: str | None, day: date, raw_page: bytes | None = None,
+                 root: Path = REPORTS_ROOT) -> tuple[Path, int]:
+    """Writes diagnosis.md, diagnosis.json and (if there was a page) raw_page.html, numbered and as latest.
+    Returns (folder, run number)."""
     folder = root / slug / safe_checkpoint(checkpoint)
-    folder.mkdir(parents=True, exist_ok=True)
-    for name in ("diagnosis.md", "diagnosis.json"):
-        old = folder / name
-        if old.exists():  # keep history: rename, never overwrite
-            stamp = datetime.fromtimestamp(old.stat().st_mtime).strftime("%Y%m%dT%H%M%S")
-            target = old.with_name(f"{old.stem}.{stamp}{old.suffix}")
-            n = 1
-            while target.exists():
-                target = old.with_name(f"{old.stem}.{stamp}-{n}{old.suffix}")
-                n += 1
-            old.rename(target)
-    (folder / "diagnosis.json").write_text(json.dumps(data, indent=2, ensure_ascii=False))
-    (folder / "diagnosis.md").write_text(build_markdown(data))
-    return folder
+    files: dict[str, str | bytes] = {
+        "diagnosis.md": build_markdown(data),
+        "diagnosis.json": json.dumps(data, indent=2, ensure_ascii=False),
+    }
+    if raw_page:
+        files["raw_page.html"] = raw_page
+    return folder, write_run_files(folder, files, anchor="diagnosis.md", day=day)

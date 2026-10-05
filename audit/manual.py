@@ -66,6 +66,11 @@ def run_manual_audit(business_id: str, question_set_path: str, *, checkpoint: st
         pairs = [(q, e) for q in qs.questions for e in ENGINES]
         say(f"\nManual audit for {business['name'] or business['domain']}")
         say(f"Question set {qs.version}: {len(qs.questions)} questions x {len(ENGINES)} engines = {len(pairs)} answers.")
+        warnings = qs.target_warnings()
+        for w in warnings:
+            say(f"WARNING: {w}")
+        if warnings:
+            say("")
         say("For every answer: use a logged-out or incognito window, start a fresh chat for each question,\n"
             "and copy the full answer exactly as shown.\n")
 
@@ -117,7 +122,7 @@ def run_manual_audit(business_id: str, question_set_path: str, *, checkpoint: st
         conn.close()
 
     return AuditOutcome(probe_run_id=str(run_id), complete=complete, missing=missing, counts=counts,
-                        derive=derived, version=qs.version)
+                        derive=derived, version=qs.version, warnings=warnings)
 
 
 def _ask_logged_out(ask, say) -> str:

@@ -4,6 +4,7 @@ test database, with a fake website (no network) and a fake Anthropic client."""
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 import httpx
 import pytest
@@ -84,7 +85,9 @@ def test_decline_sets_the_status_and_writes_both_journal_entries_and_the_linked_
 
 def test_decline_writes_no_pitch_and_says_so(business_id, tmp_path):
     out = diagnose(good_site(NOTION_SHELL), tmp_path, business_id=business_id)
-    assert sorted(p.name for p in out.report_dir.iterdir()) == ["diagnosis.json", "diagnosis.md"]
+    names = sorted(p.name for p in out.report_dir.iterdir())
+    assert [n for n in names if "pitch" in n.lower()] == []      # only the diagnosis files, no pitch
+    assert {"diagnosis.json", "diagnosis.md", "raw_page.html"} <= set(names) and len(names) == 6
     md = (out.report_dir / "diagnosis.md").read_text()
     assert "No pitch has been written" in md and "A person must type `yes` first" in md
 
@@ -207,14 +210,40 @@ def test_a_hostile_checkpoint_name_cannot_escape_the_reports_folder(tmp_path):
     assert tmp_path in out.report_dir.parents
 
 
-def test_rerunning_a_checkpoint_keeps_the_old_report(tmp_path):
-    first = diagnose(good_site(), tmp_path, checkpoint="q1")
-    (first.report_dir / "diagnosis.md").write_text("OLD REPORT")
-    second = diagnose(good_site(), tmp_path, checkpoint="q1")
-    files = sorted(p.name for p in second.report_dir.iterdir())
-    assert len(files) == 4 and "diagnosis.md" in files and "diagnosis.json" in files
-    archived = next(p for p in second.report_dir.iterdir() if p.name.startswith("diagnosis.2") and p.suffix == ".md")
-    assert archived.read_text() == "OLD REPORT"
+def test_rerunning_a_checkpoint_adds_a_numbered_run_and_keeps_the_old_one(tmp_path):
+    day1 = datetime(2026, 10, 2, 12, tzinfo=timezone.utc)
+    day2 = datetime(2026, 10, 5, 12, tzinfo=timezone.utc)
+    first = diagnose(good_site(), tmp_path, checkpoint="q1", now=day1)
+    second = diagnose(good_site(), tmp_path, checkpoint="q1", now=day2)
+    assert (first.run_number, second.run_number) == (1, 2)
+    names = {p.name for p in second.report_dir.iterdir()}
+    assert names == {
+        "diagnosis.md", "diagnosis.json", "raw_page.html",
+        "diagnosis_run1_2026-10-02.md", "diagnosis_run1_2026-10-02.json", "raw_page_run1_2026-10-02.html",
+        "diagnosis_run2_2026-10-05.md", "diagnosis_run2_2026-10-05.json", "raw_page_run2_2026-10-05.html"}
+    d = second.report_dir
+    # "Latest" is the newest run; the numbered files are each run as it was.
+    assert (d / "diagnosis.md").read_text() == (d / "diagnosis_run2_2026-10-05.md").read_text()
+    assert "2026-10-02" in (d / "diagnosis_run1_2026-10-02.md").read_text()
+    assert "2026-10-05" in (d / "diagnosis_run2_2026-10-05.md").read_text()
+
+
+def test_raw_page_is_the_exact_bytes_of_the_control_fetch(tmp_path):
+    # Non-ASCII on purpose: the file must hold the bytes as served, not a re-encoded copy.
+    body = SHOPIFY_PAGE.replace("</body>", "<p>caf\u00e9 \u2014 d\u00e9j\u00e0 vu</p></body>")
+    served = body.encode("utf-8")
+    out = diagnose(good_site(body), tmp_path, checkpoint="q1", now=datetime(2026, 10, 5, 9, tzinfo=timezone.utc))
+    assert (out.report_dir / "raw_page.html").read_bytes() == served
+    assert (out.report_dir / "raw_page_run1_2026-10-05.html").read_bytes() == served
+    assert out.facts.crawler.control.body == served          # the same fetch that fed the render check
+
+
+def test_no_raw_page_is_written_when_nothing_came_back(tmp_path):
+    def down(request):
+        raise httpx.ConnectError("no route")
+    out = diagnose(down, tmp_path, checkpoint="q1")
+    assert not (out.report_dir / "raw_page.html").exists()
+    assert (out.report_dir / "diagnosis.md").exists()
 
 
 def test_files_are_still_written_when_the_database_is_unreachable(tmp_path, monkeypatch):
