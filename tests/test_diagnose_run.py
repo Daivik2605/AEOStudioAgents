@@ -323,6 +323,28 @@ def test_cli_diagnose_prints_the_verdict_and_findings(cli_site):
     assert "LLMS_TXT_MISSING" in result.output and "diagnosis.md" in result.output
 
 
+def test_cli_shows_each_finding_as_a_plain_sentence_then_the_code(cli_site):
+    long_name = "11297775 Canada Inc"
+    block = '{"@type": "Organization", "name": "%s"}' % long_name
+    cli_site["handler"] = good_site(page(600, extra_head='<link href="https://cdn.shopify.com/s/x.css">', jsonld=block))
+    out = CliRunner().invoke(cli.app, ["diagnose", URL], terminal_width=200).output
+    lines = out.splitlines()
+    start = next(i for i, l in enumerate(lines) if "finding(s)" in l)
+    findings = [l for l in lines[start + 1:] if l.startswith("  [") or l.startswith(" " * 13)]
+    # The plain sentence is there (unwrapped, whitespace collapsed), not just the code.
+    flat = " ".join(" ".join(findings).split())
+    assert "There is no /llms.txt." in flat and "(LLMS_TXT_MISSING)" in flat
+    first = next(l for l in findings if "no /llms.txt" in l)
+    assert first.startswith("  [low     ] There is no /llms.txt")      # sentence follows the severity
+    assert first.index("There is no") < flat.index("(LLMS_TXT_MISSING)")  # code comes after, not before
+    # Wrapped to ~100 columns, with continuation lines indented under the first word.
+    assert all(len(l) <= cli.TERMINAL_WIDTH for l in findings if l.strip())
+    wrapped = [l for l in findings if l.startswith(" " * 13) and l.strip()]
+    assert wrapped and all(l[13] != " " for l in wrapped)   # lines up under the first word of the sentence
+    # A code is never split across two lines.
+    assert "(SCHEMA_NAME_IS_LEGAL_ENTITY)" in flat and any("(SCHEMA_NAME_IS_LEGAL_ENTITY)" in l for l in findings)
+
+
 def test_cli_decline_prints_the_pitch_outline_and_stops(cli_site, business_id):
     cli_site["handler"] = good_site(NOTION_SHELL)
     result = CliRunner().invoke(cli.app, ["diagnose", URL, "--business", business_id, "--checkpoint", "old_site"])

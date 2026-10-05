@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import textwrap
 from typing import Optional
 
 import typer
@@ -9,6 +10,8 @@ import typer
 from diagnose import platform_data as pd
 from diagnose.report import decline_pitch_outline
 from diagnose.run import DiagnoseError, run_diagnosis
+
+TERMINAL_WIDTH = 100   # findings are wrapped to fit a normal terminal
 
 app = typer.Typer(add_completion=False, no_args_is_help=True,
                   help="AEO Studio tools. Git, sending and deploying are always done by a person.")
@@ -50,7 +53,13 @@ def diagnose(
         typer.echo(out.ai_explanation)
     typer.echo(f"\n{len(out.findings)} finding(s):")
     for f in out.findings:
-        typer.echo(f"  [{f['severity']:<8}] {f['code']}")
+        # Plain sentence first, code in brackets afterwards for looking it up later.
+        # Continuation lines line up under the first word, not under the severity.
+        prefix = f"  [{f['severity']:<8}] "
+        typer.echo(textwrap.fill(
+            f"{f['what']}. ({f['code']})" if not f["what"].endswith((".", "!", "?")) else f"{f['what']} ({f['code']})",
+            width=TERMINAL_WIDTH, initial_indent=prefix, subsequent_indent=" " * len(prefix),
+            break_long_words=False, break_on_hyphens=False))
     for w in out.warnings:
         typer.secho(f"Warning: {w}", fg=typer.colors.YELLOW, err=True)
 
