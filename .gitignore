@@ -17,3 +17,4 @@ MASTER_PROMPT.md
 
 # Personal Claude Code settings (machine-specific)
 .claude/settings.local.json
+reports/

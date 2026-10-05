@@ -125,3 +125,14 @@ def tool_use_response(
         stop_reason="tool_use",
         usage=FakeUsage(input_tokens=input_tokens, output_tokens=output_tokens),
     )
+
+
+# ---- `aeo diagnose` tests must never reach the real internet --------------------
+
+@pytest.fixture(autouse=True)
+def _no_real_network(monkeypatch):
+    """Every diagnose test passes in a Fetcher wired to a fake transport. If one forgets,
+    this makes the default client fail loudly instead of making a real request."""
+    def _refuse():
+        raise AssertionError("a test tried to make a real HTTP request: pass in a Fetcher with a fake transport")
+    monkeypatch.setattr("diagnose.fetch.make_client", _refuse)

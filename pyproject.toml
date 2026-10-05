@@ -12,17 +12,25 @@ dependencies = [
     "weasyprint>=62.0",
     "pytest>=8.0",
     "pyyaml>=6.0",
+    "httpx>=0.27",
+    "protego>=0.3",
 ]
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
+[project.scripts]
+aeo = "aeo.cli:app"
+
 [tool.setuptools]
-# core/ exists now but there's still no CLI entry point to wire up, so this
-# stays a dependencies-only install rather than a real installed package.
-# Revisit once the `aeo` command is built.
-packages = []
+# aeo/ is the command-line entry point; core/, scoring/ and diagnose/ are the
+# code behind it.
+packages = ["aeo", "core", "scoring", "diagnose"]
+
+[tool.setuptools.package-data]
+scoring = ["config.yaml"]
+core = ["model_prices.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
