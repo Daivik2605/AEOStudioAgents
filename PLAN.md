@@ -453,7 +453,7 @@ Files are for humans. The database is the record. Both are written; neither is a
 | 7 | **`aeo audit`** manual mode | |
 | 8 | Real O'land baseline — **before the new site publishes** | |
 | 9 | Audit report output | |
-| 9.5 | `questions` table (migration 016), tag the frozen set with intent + is_target | |
+| 9.5 | `questions` table (migration 017 — 016 was used by Steps 6–7⟦aeo add / aeo audit⟧), tag the frozen set with intent + is_target | |
 | 10 | **`aeo brief`** — citation aggregation, content brief + outreach list | |
 | 11 | **`aeo recommend`** — includes the draft validator | |
 | 12 | Re-audit and compare | |
@@ -504,6 +504,7 @@ aeo queue
 
 ## Changelog
 
+- **5 Oct 2026 — implementation note.** Steps 6–7 (`aeo add`, `aeo audit --mode manual`) built and used migration number 016, which §13⟦step 9.5⟧ had reserved for the future `questions` table. That table is now migration 017. No plan content changed, just the number.
 - **2 Oct 2026 — v4.1.** Added `aeo brief --business <id>` (§3.5) — pure SQL/Python aggregation of `sources_cited` already captured by `aeo audit`, giving both the content brief (what's winning a target question) and the outreach list (candidate domains for `recommendations.off_site_sources`), closing steps 2 and 4 of "working a target prompt" (§6) without any new AI calls. Added a `questions` table (§9) carrying `intent` (commercial/informational/navigational) and `is_target`, so targeting is tagged data rather than memory, and `aeo audit` warns against targeting informational questions. Added a draft-citability checklist to `aeo recommend` (§3.3) — name up front, a statistic, a quote, a direct answer, and one model-assisted distinctiveness check against `aeo brief`'s findings. Build order and CLI updated (§13).
 - **2 Oct 2026 — v4.0.** Four agents replaced by three scripts (`diagnose`, `audit`, `recommend`); AI only for extraction, claim-checking and prose. Diagnosis added as a free, code-only qualification step with sourced serve/conditional/decline rules (§5); a decline is documented automatically and a migration pitch needs human approval. Deposit moved before the audit (§2). `diagnoses` table added, `probe_results` and `probe_runs` extended (§9). Measurement honesty rules made explicit — two designs, brand-free rate, mentioned vs recommended, retrieval activation, ranges on every score, the 20-point detection floor (§8). What we can and cannot promise written down (§6). Storage and checkpoints made a first-class requirement (§10). `business-profiler` deferred. Research documents added under `research/`.
 - **29 Sep 2026 — v3.2.** Reason required for `declined`/`rejected`, recorded as a journal note linked to the status change. `aeo status --reason`. Gate declines journal the reason.

@@ -1,4 +1,4 @@
-"""The `aeo` command. Right now it has exactly one command: `diagnose`."""
+"""The `aeo` command: `diagnose`, `add` and `audit` so far."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ from typing import Optional
 
 import typer
 
+from audit.manual import AuditError, run_manual_audit
+from core.businesses import BusinessError, add_business
 from diagnose import platform_data as pd
 from diagnose.report import decline_pitch_outline
 from diagnose.run import DiagnoseError, run_diagnosis
@@ -21,7 +23,7 @@ app = typer.Typer(add_completion=False, no_args_is_help=True,
 def main() -> None:
     """AEO Studio tools."""
     # An empty callback makes Typer keep `diagnose` as a named command, so more
-    # commands (audit, recommend...) can be added later without changing how this one is called.
+    # commands (recommend...) can be added later without changing how the others are called.
 
 
 @app.command()
@@ -80,3 +82,60 @@ def diagnose(
             typer.echo("No business was given, so no status was changed.")
 
     typer.echo(f"\nReport: {out.report_dir}/diagnosis.md")
+
+
+@app.command()
+def add(
+    url: str = typer.Argument(..., help="The business's website, e.g. https://example.com"),
+    name: Optional[str] = typer.Option(None, "--name", help="The business's name."),
+) -> None:
+    """Add a business (status: prospect) with an empty profile, so it can be diagnosed and audited."""
+    try:
+        b = add_business(url, name)
+    except BusinessError as exc:
+        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+    typer.echo(f"Added {b['name'] or b['domain']} ({b['domain']}), status: prospect")
+    typer.echo(f"Business id: {b['id']}")
+    typer.echo("The profile is empty: no facts have been confirmed yet.")
+
+
+@app.command()
+def audit(
+    business: str = typer.Option(..., "--business", help="Business id."),
+    question_set: str = typer.Option(..., "--question-set", help="Path to the frozen question set, e.g. question_sets/oland-stations_v1.yaml"),
+    mode: str = typer.Option("manual", "--mode", help="manual (default). batch is not built yet."),
+    checkpoint: Optional[str] = typer.Option(None, "--checkpoint", help="Free text, e.g. old_site or new_site_no_aeo."),
+) -> None:
+    """Ask the engines (by hand), store every raw answer, then work out who each answer names."""
+    if mode == "batch":
+        typer.secho("Error: batch mode is not built yet. It is only built after manual mode has run "
+                    "cleanly ten times (PLAN.md section 3.2).", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+    if mode != "manual":
+        typer.secho(f"Error: unknown mode '{mode}'. Use manual.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+
+    try:
+        out = run_manual_audit(business, question_set, checkpoint=checkpoint, ask=input, say=typer.echo)
+    except AuditError as exc:
+        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+
+    c = out.counts
+    typer.echo("")
+    if out.complete:
+        typer.secho("Audit complete.", fg=typer.colors.GREEN, bold=True)
+    else:
+        typer.secho(f"Audit NOT complete: {len(out.missing)} answer(s) missing. The run is marked failed.",
+                    fg=typer.colors.YELLOW, bold=True)
+    typer.echo(f"Answers collected: {c['answers']}")
+    typer.echo(f"Answers that named the business: {c['named_business']}")
+    typer.echo(f"Answers that recommended the business: {c['recommended_business']}")
+    if c["not_analysed"]:
+        typer.secho(f"{c['not_analysed']} answer(s) could not be read by the model and were sent to the "
+                    "human queue. The raw answers are saved.", fg=typer.colors.YELLOW)
+    if out.derive.claim_check_failed:
+        typer.secho(f"{out.derive.claim_check_failed} claim check(s) failed and were sent to the human queue.",
+                    fg=typer.colors.YELLOW)
+    typer.echo(f"Run id: {out.probe_run_id}")

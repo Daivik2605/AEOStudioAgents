@@ -24,9 +24,9 @@ build-backend = "setuptools.build_meta"
 aeo = "aeo.cli:app"
 
 [tool.setuptools]
-# aeo/ is the command-line entry point; core/, scoring/ and diagnose/ are the
+# aeo/ is the command-line entry point; core/, scoring/, diagnose/ and audit/ are the
 # code behind it.
-packages = ["aeo", "core", "scoring", "diagnose"]
+packages = ["aeo", "core", "scoring", "diagnose", "audit"]
 
 [tool.setuptools.package-data]
 scoring = ["config.yaml"]
