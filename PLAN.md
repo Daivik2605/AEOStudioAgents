@@ -1,6 +1,6 @@
 # AEOStudioAgents — Plan
 
-**Version 4.3 · 5 October 2026.** Changes since 4.2 are in the changelog at the end.
+**Version 4.4 · 5 October 2026.** Changes since 4.3 are in the changelog at the end.
 
 Read this file before doing anything in this repository. It is the source of truth. When a decision is not covered here, ask rather than assume.
 
@@ -468,17 +468,19 @@ Files are for humans. The database is the record. Both are written; neither is a
 | 6 | `aeo add` (duplicate-safe) + question-set YAML (with `intent`/`is_target`) | ✅ Done |
 | 7 | `aeo audit --mode manual` (terminal capture), migration 016, numbered run history | ✅ Done |
 | 8 | O'land old-site baseline | ✅ Diagnosis done (business-linked). Audit answers only in the manual snapshot sheet — by decision, the first tool audit runs after the new site is live |
-| 9 | **Richer extraction** (order, reasons, descriptors) + sources box | ⏭ Next |
-| 10 | **Fill-in file** + `aeo audit import` | |
+| 9 | Richer extraction (order, reasons, descriptors) + sources box — prompt v2 | ✅ Done (tested with fakes; first real run after the new site is live) |
+| 10 | **Fill-in file** + `aeo audit import` | ⏭ Next |
 | 11 | **Cost gate** on audit's AI calls | |
-| 12 | **`aeo guide`** — plain-language list of every command, when to use it, in what order | |
-| 13 | Audit report output (scores with ranges, share of voice, reasons, wrong facts) | |
-| 14 | `aeo show` (one business's history in plain sentences) + `aeo export` (context pack for Claude) | |
-| 15 | `aeo backup` + Supabase move (see §16) | |
-| 16 | **`aeo brief`** — citation aggregation, content brief + outreach list | |
-| 17 | **`aeo recommend`** — includes the draft validator | |
-| 18 | Re-audit and compare | |
-| 19 | Frontend + hosting (see §16) | |
+| 12 | **`aeo status`** — change status with a required reason (§7). The decline flow already tells people to use it | |
+| 13 | **Client facts file** + `aeo facts import` — confirmed facts into a new profile version, so claim checking and `accuracy_score` can run | |
+| 14 | **`aeo guide`** — plain-language list of every command, when to use it, in what order | |
+| 15 | Audit report output (scores with ranges, share of voice, reasons, wrong facts) | |
+| 16 | `aeo show` (one business's history in plain sentences) + `aeo export` (context pack for Claude) | |
+| 17 | `aeo backup` + Supabase move (see §16) | |
+| 18 | **`aeo brief`** — citation aggregation, content brief + outreach list | |
+| 19 | **`aeo recommend`** — includes the draft validator | |
+| 20 | Re-audit and compare | |
+| 21 | Frontend + hosting (see §16) | |
 
 Stop after each step for review. Do not build ahead.
 
@@ -489,6 +491,7 @@ aeo guide                                   every command, when to use it, in or
 aeo diagnose <url> [--business <id>] [--checkpoint <name>]
 aeo audit --business <id> [--mode manual|batch] [--checkpoint <name>]
 aeo audit import <file>
+aeo facts import --business <id> <file>   client-confirmed facts → new profile version
 aeo show --business <id>                    history and next step, plain sentences
 aeo export --business <id>                  one markdown context pack for Claude
 aeo backup                                  dump the database to the backup folder
@@ -531,6 +534,9 @@ aeo queue
 
 ## 16. Team, help and hosting
 
+### Client facts (v4.4)
+Claim checking — and so `accuracy_score`, our strongest measure — only runs against facts the client has confirmed. `aeo add` creates an empty profile and nothing else fills it, so until this exists accuracy can never be measured. Same pattern as the question set: a YAML facts file (`facts/<slug>.yaml` — name variants, phone, address, service area, hours, services, languages, proof points), filled in from the questionnaire after the deposit, loaded with `aeo facts import`. Each import writes a **new** `business_profiles` version (source `client`); old versions are never edited. Facts are what the client confirmed, never our guesses — `apparent_competitors` stays out.
+
 ### `aeo guide`
 `aeo --help` lists commands; it doesn't say when to use them. `aeo guide` prints the workflow in plain sentences, in order — new prospect → `aeo add` → `aeo diagnose` → (deposit) → question set → `aeo audit` → `aeo audit import` → report → `aeo recommend` → re-audit — with one line per command on when to use it and one example. Its text lives in one file so it's updated whenever a command is added. The frontend's help page reuses it.
 
@@ -561,6 +567,7 @@ Every journal entry records the person, not the script: `AEO_OPERATOR=daivik` (o
 
 ## Changelog
 
+- **5 Oct 2026 — v4.4.** Build order: step 9 (extraction v2 + sources box) done. Added two missing steps found in review: `aeo status` (the decline flow already refers to it) and a client facts file + `aeo facts import` (without it, claim checking and `accuracy_score` can never run). Renumbered steps 10–21.
 - **5 Oct 2026 — v4.3.** Audit extraction widened in the same single AI call: businesses in order (share of voice), reasons given for recommendations, descriptor words, and a separate sources box in capture (§3.2). Fill-in file + `aeo audit import` replaces terminal pasting as the main path. Cost gate before audit's AI calls. New commands: `aeo guide`, `aeo show`, `aeo export`, `aeo backup`, `aeo audit import` (§13). New §16: help, context pack for Claude, operator name in the journal, and two-phase hosting — local now; with the frontend, a hosted app so Anikait uses a browser and the code is never shared (free–$7/mo plus API use). Build order rewritten with real statuses.
 
 - **5 Oct 2026 — v4.2.** Dropped the `questions` database table from v4.1. `intent` and `is_target` now live as fields directly in the frozen question-set YAML file (§9), not a separate table — same protection (warn against targeting an informational question, always show the full set with targets marked), no new migration or foreign key. `probe_results` keeps `question_set_version` + `query_text` instead of a `question_id` FK.
