@@ -1,6 +1,6 @@
 # AEOStudioAgents — Plan
 
-**Version 4.1 · 2 October 2026.** Changes since 4.0 are in the changelog at the end.
+**Version 4.3 · 5 October 2026.** Changes since 4.2 are in the changelog at the end.
 
 Read this file before doing anything in this repository. It is the source of truth. When a decision is not covered here, ask rather than assume.
 
@@ -103,6 +103,20 @@ Two modes. **Manual is the default.**
 **Batch is not a better manual.** API answers overlap the real consumer interface by only 15–32% on which brands get named, and for Google surfaces source attribution is impossible through the API. Batch is a separate, cheaper, clearly-labelled series. **It is never merged into the same number as manual.** (`AEO_PLAYBOOK.md` §6.5.)
 
 Either mode: store the raw answer permanently, then derive. AI does two jobs — pull out which businesses were named, and mark each claim against profile v2 as correct / incorrect / unverifiable.
+
+**What the extraction pulls out of each answer (v4.3).** Still one AI call per answer, no extra cost — it just returns more:
+- every business named, **in the order it appears** (first vs fifth is a different result; across answers this becomes share of voice)
+- **the reason given** for each recommendation ("because they serve all of Canada") — tells the client which selling points AI rewards
+- **the words used to describe** each business ("Montreal-based", "premium") — surfaces positioning problems
+- whether anyone was named at all (a commercial question nobody wins is an open field)
+
+These all come from the audit, never the diagnosis — diagnosis reads the website and never asks an AI anything.
+
+**Sources need their own box.** Copying an answer out of ChatGPT or Perplexity usually drops the links. The capture asks for the cited links separately and stores them in `probe_results.sources_cited`, per engine. `aeo brief` depends on this.
+
+**Answers go in through a fill-in file, not the terminal.** `aeo audit --mode manual` writes a fill-in sheet (one section per question × engine: answer, sources, searched-the-web y/n/unclear). A person fills it in any editor — two people can split it, and it can be stopped and resumed. `aeo audit import <file>` loads it. Typing answers into the terminal stays available but is no longer the main path.
+
+**Cost gate.** Before the AI extraction calls run, print a cost card (number of calls, estimated cost from `core/model_prices.json`) and require a typed `yes`, per CLAUDE.md. Manual capture itself costs nothing; only the analysis does.
 
 ### 3.3 `aeo recommend --business <id>`
 
@@ -447,26 +461,37 @@ Files are for humans. The database is the record. Both are written; neither is a
 |---|---|---|
 | 0 | Scaffold, migrations 001–013, triggers | ✅ Done |
 | 1 | `core/`: db, llm, journal, runner, model prices | ✅ Done |
-| 2 | `scoring/`: five formulas, tier tests, test DB | ✅ Done (fixes pending) |
-| 3 | **Fixes:** migration 014 (nullable), lower-edge tiers, `.gitignore` | ⏭ Next |
-| 4 | **`aeo diagnose`** — detection, crawler test, robots, render, findings, report | |
-| 5 | Migration 015: `diagnoses` table, `probe_results` columns, `probe_runs.checkpoint`, 2 journal types | |
-| 6 | Seed O'land + the frozen question set | |
-| 7 | **`aeo audit`** manual mode | |
-| 8 | Real O'land baseline — **before the new site publishes** | |
-| 9 | Audit report output | |
-| 9.5 | ~~`questions` table~~ — dropped (v4.2); `intent`/`is_target` live in the question-set YAML file instead, already supported once that file format is extended | |
-| 10 | **`aeo brief`** — citation aggregation, content brief + outreach list | |
-| 11 | **`aeo recommend`** — includes the draft validator | |
-| 12 | Re-audit and compare | |
+| 2 | `scoring/`: five formulas, tier tests, test DB | ✅ Done |
+| 3 | Fixes: migration 014, lower-edge tiers, `.gitignore` | ✅ Done |
+| 4 | `aeo diagnose` — detection, crawler test, robots, render, findings, report, raw page | ✅ Done |
+| 5 | Migration 015: `diagnoses` table, 2 journal types | ✅ Done |
+| 6 | `aeo add` (duplicate-safe) + question-set YAML (with `intent`/`is_target`) | ✅ Done |
+| 7 | `aeo audit --mode manual` (terminal capture), migration 016, numbered run history | ✅ Done |
+| 8 | O'land old-site baseline | ✅ Diagnosis done (business-linked). Audit answers only in the manual snapshot sheet — by decision, the first tool audit runs after the new site is live |
+| 9 | **Richer extraction** (order, reasons, descriptors) + sources box | ⏭ Next |
+| 10 | **Fill-in file** + `aeo audit import` | |
+| 11 | **Cost gate** on audit's AI calls | |
+| 12 | **`aeo guide`** — plain-language list of every command, when to use it, in what order | |
+| 13 | Audit report output (scores with ranges, share of voice, reasons, wrong facts) | |
+| 14 | `aeo show` (one business's history in plain sentences) + `aeo export` (context pack for Claude) | |
+| 15 | `aeo backup` + Supabase move (see §16) | |
+| 16 | **`aeo brief`** — citation aggregation, content brief + outreach list | |
+| 17 | **`aeo recommend`** — includes the draft validator | |
+| 18 | Re-audit and compare | |
+| 19 | Frontend + hosting (see §16) | |
 
 Stop after each step for review. Do not build ahead.
 
 ### CLI
 
 ```
+aeo guide                                   every command, when to use it, in order
 aeo diagnose <url> [--business <id>] [--checkpoint <name>]
 aeo audit --business <id> [--mode manual|batch] [--checkpoint <name>]
+aeo audit import <file>
+aeo show --business <id>                    history and next step, plain sentences
+aeo export --business <id>                  one markdown context pack for Claude
+aeo backup                                  dump the database to the backup folder
 aeo brief --business <id>
 aeo recommend --business <id>
 aeo add <url>
@@ -504,7 +529,39 @@ aeo queue
 
 ---
 
+## 16. Team, help and hosting
+
+### `aeo guide`
+`aeo --help` lists commands; it doesn't say when to use them. `aeo guide` prints the workflow in plain sentences, in order — new prospect → `aeo add` → `aeo diagnose` → (deposit) → question set → `aeo audit` → `aeo audit import` → report → `aeo recommend` → re-audit — with one line per command on when to use it and one example. Its text lives in one file so it's updated whenever a command is added. The frontend's help page reuses it.
+
+### Making the tool readable to other AI tools
+`aeo export --business <id>` writes one markdown file: a short header saying what each part is, then the latest diagnosis, the raw page, the audit answers and the scores. Drop it into Claude and ask "what should we fix first?" or "draft the client email." An MCP connector (Claude querying the database directly) is deferred until there are several clients.
+
+### Who ran what
+Every journal entry records the person, not the script: `AEO_OPERATOR=daivik` (or `anikait`) in each person's `.env`.
+
+### Hosting — two phases
+
+**Now: local only.** Daivik runs everything on his laptop. Postgres in Docker. Nothing hosted, no cost.
+
+**With the frontend: hosted, code never shared.** Anikait uses the tool through a browser; the code, the database credentials and the Anthropic key stay on the server. Nobody but Daivik needs the repository.
+
+| Piece | Choice | Cost |
+|---|---|---|
+| Database | Supabase free tier (500 MB, 2 projects; pauses after a week idle; **no backups on free**) | $0 |
+| App (backend + frontend) | Render Starter (always on) — or Render free if a ~1-minute wake-up after 15 idle minutes is acceptable; or a Hetzner CX23 VPS | $7/mo, $0, or ~€6/mo |
+| Login | Cloudflare Access in front of the app (free tier, up to 50 users — confirm it covers a self-hosted app before relying on it) | $0 |
+| Report files | Supabase storage (1 GB free) or the server's disk | $0 |
+| Backups | `aeo backup` on a schedule, to storage we control | $0 |
+| AI calls | Anthropic API, per use | pennies per audit; shown on every cost card |
+
+**Logic stays in plain Python functions; the CLI and the frontend are thin wrappers over the same functions.** This is what makes the frontend cheap to build later and keeps the two from ever disagreeing.
+
+---
+
 ## Changelog
+
+- **5 Oct 2026 — v4.3.** Audit extraction widened in the same single AI call: businesses in order (share of voice), reasons given for recommendations, descriptor words, and a separate sources box in capture (§3.2). Fill-in file + `aeo audit import` replaces terminal pasting as the main path. Cost gate before audit's AI calls. New commands: `aeo guide`, `aeo show`, `aeo export`, `aeo backup`, `aeo audit import` (§13). New §16: help, context pack for Claude, operator name in the journal, and two-phase hosting — local now; with the frontend, a hosted app so Anikait uses a browser and the code is never shared (free–$7/mo plus API use). Build order rewritten with real statuses.
 
 - **5 Oct 2026 — v4.2.** Dropped the `questions` database table from v4.1. `intent` and `is_target` now live as fields directly in the frozen question-set YAML file (§9), not a separate table — same protection (warn against targeting an informational question, always show the full set with targets marked), no new migration or foreign key. `probe_results` keeps `question_set_version` + `query_text` instead of a `question_id` FK.
 - **5 Oct 2026 — implementation note.** Steps 6–7 (`aeo add`, `aeo audit --mode manual`) built and used migration number 016, which §13⟦step 9.5⟧ had reserved for the future `questions` table. That table is now migration 017. No plan content changed, just the number.
