@@ -1,8 +1,9 @@
 """The two AI jobs of `aeo audit` (PLAN.md section 1). Both read an answer that is
 already stored, and both are safe to re-run: nothing here touches the raw answer.
 
-1. Extraction  - which businesses does this answer name? Was ours among them,
-                 and was it proposed as the answer rather than listed as an also-ran?
+1. Extraction  - which businesses does this answer name, in what order, and with what
+                 reason and descriptive words? Was ours among them, and was it proposed
+                 as the answer rather than listed as an also-ran?
 2. Claim check - what does the answer say about the client, and does it match
                  the facts the client confirmed? Only runs if there are such facts.
 
@@ -16,7 +17,7 @@ from pathlib import Path
 from typing import Literal
 
 import psycopg
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from audit import store
 from core.runner import AgentDefinition, AgentOutputInvalid, run_agent
@@ -30,10 +31,22 @@ class NamedBusiness(BaseModel):
     domain: str | None = None
     is_client: bool
     recommended: bool
+    position: int = Field(ge=1)          # 1 = the first business the answer names
+    reason: str | None = None            # the answer's own reason, None if it gives none
+    descriptors: list[str] = []          # the answer's own words for this business
 
 
 class ExtractOutput(BaseModel):
     businesses: list[NamedBusiness]
+
+    @model_validator(mode="after")
+    def _positions_are_distinct(self):
+        # Two businesses cannot both be "second". If the model says so, the output is invalid,
+        # which sends it through the same retry-once-then-human_queue path as any other bad output.
+        positions = [b.position for b in self.businesses]
+        if len(set(positions)) != len(positions):
+            raise ValueError(f"each business needs its own position, but got {positions}")
+        return self
 
 
 class Claim(BaseModel):
@@ -47,9 +60,10 @@ class ClaimOutput(BaseModel):
     claims: list[Claim]
 
 
-EXTRACT = AgentDefinition(name="audit_extract", model=MODEL, prompt_version="v1",
-                          prompt_path=PROMPTS / "audit_extract" / "v1.md",
-                          output_schema=ExtractOutput, max_tokens=1500)
+# v1.md stays exactly as it was: runs already logged prompt_version "v1".
+EXTRACT = AgentDefinition(name="audit_extract", model=MODEL, prompt_version="v2",
+                          prompt_path=PROMPTS / "audit_extract" / "v2.md",
+                          output_schema=ExtractOutput, max_tokens=2500)
 CLAIM_CHECK = AgentDefinition(name="audit_claim_check", model=MODEL, prompt_version="v1",
                               prompt_path=PROMPTS / "audit_claim_check" / "v1.md",
                               output_schema=ClaimOutput, max_tokens=2500)

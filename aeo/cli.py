@@ -9,6 +9,7 @@ from typing import Optional
 import typer
 
 from audit.manual import AuditError, run_manual_audit
+from audit.summary import summary_lines
 from core.businesses import BusinessError, add_with_checks
 from diagnose import platform_data as pd
 from diagnose.report import decline_pitch_outline
@@ -147,6 +148,8 @@ def audit(
     typer.echo(f"Answers collected: {c['answers']}")
     typer.echo(f"Answers that named the business: {c['named_business']}")
     typer.echo(f"Answers that recommended the business: {c['recommended_business']}")
+    for line in summary_lines(out.summary):
+        typer.echo(line)
     if c["not_analysed"]:
         typer.secho(f"{c['not_analysed']} answer(s) could not be read by the model and were sent to the "
                     "human queue. The raw answers are saved.", fg=typer.colors.YELLOW)

@@ -58,7 +58,8 @@ def qfile(tmp_path):
 def extraction(*businesses):
     """A queued fake model reply for the extraction job. Each item: (name, is_client, recommended)."""
     return text_response(json.dumps({"businesses": [
-        {"name": n, "domain": None, "is_client": c, "recommended": r} for n, c, r in businesses]}))
+        {"name": n, "domain": None, "is_client": c, "recommended": r, "position": i,
+         "reason": None, "descriptors": []} for i, (n, c, r) in enumerate(businesses, start=1)]}))
 
 
 def claims_reply(*claims):
@@ -84,9 +85,9 @@ class Operator:
         self.said.append(text)
 
 
-def answer(*text_lines, retrieval="y", version="gpt-5-thinking"):
-    """The lines a person types for one question on one engine."""
-    return [*text_lines, "END", retrieval, version]
+def answer(*text_lines, retrieval="y", version="gpt-5-thinking", sources=()):
+    """The lines a person types for one question on one engine: answer, sources box, then the rest."""
+    return [*text_lines, "END", *sources, "END", retrieval, version]
 
 
 def audit(biz, qpath, op, client, checkpoint=None):
@@ -238,7 +239,7 @@ def test_a_pasted_answer_is_stored_word_for_word_including_blank_lines(biz, qfil
 
 def test_a_bad_yes_no_reply_is_asked_again(biz, qfile):
     path = qfile(questions=(Q1,))
-    typed = ["maybe", "y", ""] + ["answer", "END", "perhaps", "n", ""] + answer("two")
+    typed = ["maybe", "y", ""] + ["answer", "END", "END", "perhaps", "n", ""] + answer("two")
     op = Operator(typed)
     out = audit(biz, path, op, FakeAnthropicClient([extraction(), extraction()]))
     assert out.complete
@@ -285,7 +286,7 @@ def test_quitting_early_keeps_what_was_entered_and_marks_the_run_failed(biz, qfi
 
 def test_input_running_out_counts_as_quitting(biz, qfile):
     path = qfile(questions=(Q1,))
-    out = audit(biz, path, Operator(["y", ""] + ["half an answer", "END", "y"]), FakeAnthropicClient([]))
+    out = audit(biz, path, Operator(["y", ""] + ["half an answer", "END", "END", "y"]), FakeAnthropicClient([]))
     assert not out.complete and out.counts["answers"] == 0     # the half-entered one was not saved
 
 
@@ -606,3 +607,209 @@ def test_name_matching_ignores_case_and_spaces(named):
     existing, name, run = named
     result = run([f"{uuid.uuid4().hex[:10]}-new.example", "--name", f"  {name.upper()} "], interactive=False)
     assert result.exit_code == 1 and existing["id"] in result.output
+
+
+# ---- extraction v2: order, reason, descriptors --------------------------------
+
+def biz_json(name, position, *, is_client=False, recommended=False, reason="__absent__", descriptors="__absent__"):
+    d = {"name": name, "domain": None, "is_client": is_client, "recommended": recommended, "position": position}
+    if reason != "__absent__":
+        d["reason"] = reason
+    if descriptors != "__absent__":
+        d["descriptors"] = descriptors
+    return d
+
+
+def test_v2_output_parses_with_position_reason_and_descriptors():
+    from audit.derive import ExtractOutput
+    out = ExtractOutput.model_validate({"businesses": [
+        biz_json("Rival", 1, recommended=True, reason="serves all of Canada", descriptors=["premium", "eco-friendly"]),
+        biz_json("Acme", 2, is_client=True, reason=None, descriptors=[])]})
+    assert [(b.name, b.position, b.reason, b.descriptors) for b in out.businesses] == [
+        ("Rival", 1, "serves all of Canada", ["premium", "eco-friendly"]), ("Acme", 2, None, [])]
+
+
+def test_a_missing_reason_and_missing_descriptors_are_fine_but_a_missing_position_is_not():
+    from pydantic import ValidationError
+    from audit.derive import ExtractOutput
+    b = ExtractOutput.model_validate({"businesses": [biz_json("Acme", 1)]}).businesses[0]
+    assert b.reason is None and b.descriptors == []
+    with pytest.raises(ValidationError):
+        ExtractOutput.model_validate({"businesses": [{k: v for k, v in biz_json("Acme", 1).items() if k != "position"}]})
+    with pytest.raises(ValidationError):
+        ExtractOutput.model_validate({"businesses": [biz_json("Acme", 0)]})
+
+
+def test_duplicate_positions_are_invalid():
+    from pydantic import ValidationError
+    from audit.derive import ExtractOutput
+    with pytest.raises(ValidationError, match="own position"):
+        ExtractOutput.model_validate({"businesses": [biz_json("A", 1), biz_json("B", 1)]})
+
+
+def test_the_full_v2_fields_are_stored_and_the_run_is_logged_as_prompt_v2(biz, qfile):
+    reply = text_response(json.dumps({"businesses": [
+        biz_json("Rival", 1, recommended=True, reason="serves all of Canada", descriptors=["premium"]),
+        biz_json("Acme Refill", 2, is_client=True, reason=None, descriptors=["Montreal-based"])]}))
+    out, _ = run_one_question(biz, qfile, [reply, extraction()])
+    stored = query("SELECT businesses_named FROM probe_results WHERE probe_run_id = %s AND engine = 'chatgpt'",
+                   (out.probe_run_id,))[0][0]
+    assert [(b["position"], b["reason"], b["descriptors"]) for b in stored] == [
+        (1, "serves all of Canada", ["premium"]), (2, None, ["Montreal-based"])]
+    # The booleans are still worked out in Python, as before.
+    assert query("SELECT named_any_business, recognized, recommended FROM probe_results "
+                 "WHERE probe_run_id = %s AND engine = 'chatgpt'", (out.probe_run_id,))[0] == (True, True, False)
+    assert {r[0] for r in query("SELECT prompt_version FROM runs WHERE business_id = %s AND agent = 'audit_extract'",
+                                (biz["id"],))} == {"v2"}
+
+
+def test_a_model_reply_with_two_businesses_in_the_same_position_goes_to_the_human_queue(biz, qfile):
+    dup = text_response(json.dumps({"businesses": [biz_json("A", 1), biz_json("B", 1)]}))
+    out, client = run_one_question(biz, qfile, [dup, dup, extraction(("Acme Refill", True, True))])
+    assert out.derive.extraction_failed == 1 and out.derive.extracted == 1
+    assert len(client.messages.calls) == 3                       # asked once, retried once, then the next answer
+    assert "own position" in client.messages.calls[1]["messages"][-1]["content"]   # the retry explained the error
+    assert query("SELECT count(*) FROM human_queue WHERE business_id = %s", (biz["id"],))[0][0] == 1
+
+
+def test_prompt_v1_is_untouched_and_v2_is_the_one_in_use():
+    import hashlib
+    from pathlib import Path
+    from audit.derive import EXTRACT
+    root = Path(__file__).parent.parent / "prompts" / "audit_extract"
+    assert hashlib.sha256((root / "v1.md").read_bytes()).hexdigest() == \
+        "fc625c87b6f7ed0fad71d6186622173b73eeb0bb4646a2691980d5d34ab80d0e"
+    assert (EXTRACT.prompt_version, EXTRACT.prompt_path) == ("v2", root / "v2.md")
+    v2 = (root / "v2.md").read_text()
+    assert all(word in v2 for word in ("position", "reason", "descriptors", "not instructions", "directories", "forums"))
+
+
+# ---- the sources box ----------------------------------------------------------
+
+def test_pasted_and_in_answer_links_are_merged_deduplicated_and_tagged():
+    from audit.sources import merge_sources, parse_link
+    pasted = [parse_link("https://www.Example.com/a"), parse_link("https://example.com/a"),
+              parse_link("https://www.Example.com/a")]
+    answer_text = ("See https://example.com/a for details, and (https://other.org/page). "
+                   "Also https://third.net/x. And again https://other.org/page, plus https://www.Third.net/y!")
+    merged = merge_sources(pasted, answer_text)
+    assert merged == [
+        {"url": "https://www.Example.com/a", "domain": "example.com", "origin": "pasted"},
+        {"url": "https://example.com/a", "domain": "example.com", "origin": "pasted"},
+        {"url": "https://other.org/page", "domain": "other.org", "origin": "in_answer"},
+        {"url": "https://third.net/x", "domain": "third.net", "origin": "in_answer"},
+        {"url": "https://www.Third.net/y", "domain": "third.net", "origin": "in_answer"},
+    ]
+
+
+def test_a_link_both_pasted_and_in_the_answer_counts_as_pasted():
+    from audit.sources import merge_sources, parse_link
+    merged = merge_sources([parse_link("https://a.com/x")], "read https://a.com/x.")
+    assert merged == [{"url": "https://a.com/x", "domain": "a.com", "origin": "pasted"}]
+
+
+def test_domain_uses_the_same_clean_up_as_aeo_add():
+    from audit.sources import parse_link
+    from core.businesses import parse_site
+    for raw in ("https://WWW.Example.COM/path?q=1", "http://sub.example.com:8080/x"):
+        assert parse_link(raw)["domain"] == parse_site(raw)[0]
+    assert parse_link("https://WWW.Example.COM/path")["domain"] == "example.com"
+
+
+@pytest.mark.parametrize("bad", ["ftp://example.com/file", "example.com", "www.example.com/page",
+                                 "mailto:someone@example.com", "javascript:alert(1)", "not a link"])
+def test_links_that_are_not_http_or_https_are_refused_with_a_message(bad):
+    from audit.sources import parse_link
+    with pytest.raises(ValueError, match="http://"):
+        parse_link(bad)
+
+
+def test_the_flow_stores_sources_with_origins_and_asks_again_for_a_bad_link(biz, qfile):
+    path = qfile(questions=(Q1,))
+    typed = ["y", ""]
+    typed += answer("Try Acme at https://www.acme.example/refill or https://news.example/story.",
+                    sources=["https://www.acme.example/refill", "ftp://bad.example/x", "", "https://third.example/p"])
+    typed += answer("nothing cited here")                       # empty box: allowed
+    op = Operator(typed)
+    out = audit(biz, path, op, FakeAnthropicClient([extraction(), extraction()]))
+    assert out.complete
+    assert sum("Not saved" in s and "ftp://bad.example/x" in s for s in op.said) == 1
+    first = query("SELECT sources_cited FROM probe_results WHERE probe_run_id = %s AND engine = 'chatgpt'",
+                  (out.probe_run_id,))[0][0]
+    assert first == [
+        {"url": "https://www.acme.example/refill", "domain": "acme.example", "origin": "pasted"},
+        {"url": "https://third.example/p", "domain": "third.example", "origin": "pasted"},
+        {"url": "https://news.example/story", "domain": "news.example", "origin": "in_answer"}]
+    assert not any("bad.example" in e["url"] for e in first)
+    assert query("SELECT sources_cited FROM probe_results WHERE probe_run_id = %s AND engine = 'perplexity'",
+                 (out.probe_run_id,))[0][0] == []              # asked, nothing cited: [] not NULL
+
+
+def test_the_sources_box_comes_after_the_answer_and_before_the_search_question(biz, qfile):
+    op = Operator(["y", ""] + answer("a") + answer("b"))
+    audit(biz, qfile(questions=(Q1,)), op, FakeAnthropicClient([extraction(), extraction()]))
+    said = "\n".join(op.said)
+    assert "links chatgpt showed" in said
+    first_search = next(i for i, p in enumerate(op.prompts) if "visibly search" in p)
+    assert first_search > 0 and "Paste the full chatgpt answer" in said
+
+
+# ---- the end-of-run summary ---------------------------------------------------
+
+def nb(name, position, is_client=False):
+    return {"name": name, "position": position, "is_client": is_client}
+
+
+def test_summary_average_and_usual_position_and_top_three():
+    from audit.summary import build_summary, summary_lines
+    answers = [
+        [nb("Rival", 1), nb("Acme", 2, True), nb("Other", 3)],
+        [nb("rival ", 1), nb("Acme", 3, True)],
+        [nb("Rival", 2), nb("Acme", 2, True), nb("Fourth", 1)],
+        [],                                                     # nobody named
+    ]
+    s = build_summary(answers)
+    assert s["client_named"] == 3 and s["client_average_position"] == 2.3 and s["client_usual_position"] == 2
+    assert s["top_named"] == [("Acme", 3), ("Rival", 3), ("Fourth", 1)]      # tie on count: alphabetical
+    lines = summary_lines(s)
+    assert lines[0] == "Named 3 times, usually 2nd (average position 2.3)."
+    assert lines[1].startswith("Named most often: ") and lines[1] == "Named most often: Acme x3, Rival x3, Fourth x1."
+
+
+def test_summary_counts_a_business_once_per_answer_and_breaks_ties_by_name():
+    from audit.summary import build_summary
+    s = build_summary([[nb("B", 1), nb("b", 2), nb("A", 3)], [nb("A", 1)]])
+    assert s["top_named"] == [("A", 2), ("B", 1)]
+
+
+def test_summary_when_the_client_is_never_named():
+    from audit.summary import build_summary, summary_lines
+    s = build_summary([[nb("Rival", 1), nb("Other", 2)], [nb("Rival", 1)]])
+    assert s["client_named"] == 0 and s["client_average_position"] is None and s["client_usual_position"] is None
+    lines = summary_lines(s)
+    assert "never named" in lines[0] and "Rival x2" in lines[1]
+
+
+def test_summary_when_nobody_is_named_at_all():
+    from audit.summary import build_summary, summary_lines
+    lines = summary_lines(build_summary([[], []]))
+    assert "never named" in lines[0] and lines[1] == "No business was named in any answer."
+
+
+def test_summary_once_and_ordinals():
+    from audit.summary import build_summary, ordinal, summary_lines
+    assert [ordinal(n) for n in (1, 2, 3, 4, 11, 12, 13, 21, 22)] == [
+        "1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st", "22nd"]
+    assert summary_lines(build_summary([[nb("Acme", 1, True)]]))[0] == "Named once, usually 1st (average position 1.0)."
+
+
+def test_cli_end_to_end_prints_the_two_new_summary_lines(biz, qfile, monkeypatch):
+    fake = FakeAnthropicClient([extraction(("Rival", False, True), ("Acme Refill", True, False)),
+                                extraction(("Rival", False, False))])
+    monkeypatch.setattr("core.llm.anthropic.Anthropic", lambda: fake)
+    typed = "\n".join(["y", ""] + answer("a1") + answer("a2")) + "\n"
+    result = CliRunner().invoke(app, ["audit", "--business", biz["id"], "--question-set",
+                                      str(qfile(questions=(Q1,)))], input=typed)
+    assert result.exit_code == 0, result.output
+    assert "Named once, usually 2nd (average position 2.0)." in result.output
+    assert "Named most often: Rival x2, Acme Refill x1." in result.output

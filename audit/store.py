@@ -58,15 +58,17 @@ def next_repeat_number(conn: psycopg.Connection, probe_run_id, question: str, en
 
 def add_result(conn: psycopg.Connection, *, probe_run_id, question: str, engine: str, raw_answer: str,
                retrieval_activated: bool | None, engine_version: str | None, logged_in_state: str,
-               location_context: str | None, question_set_version: str) -> tuple[UUID, int]:
+               location_context: str | None, question_set_version: str,
+               sources_cited: list[dict] | None = None) -> tuple[UUID, int]:
     repeat = next_repeat_number(conn, probe_run_id, question, engine)
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO probe_results (probe_run_id, query_text, location_context, engine, repeat_number, "
-            "raw_response_text, retrieval_activated, engine_version, logged_in_state, question_set_version) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            "raw_response_text, retrieval_activated, engine_version, logged_in_state, question_set_version, "
+            "sources_cited) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
             (probe_run_id, question, location_context, engine, repeat, raw_answer,
-             retrieval_activated, engine_version, logged_in_state, question_set_version))
+             retrieval_activated, engine_version, logged_in_state, question_set_version,
+             Jsonb(sources_cited) if sources_cited is not None else None))
         return cur.fetchone()[0], repeat
 
 
@@ -109,3 +111,11 @@ def summary_counts(conn: psycopg.Connection, probe_run_id) -> dict:
     return {"answers": total, "named_business": named, "recommended_business": recommended,
             "not_analysed": not_analysed}
 
+
+
+def named_businesses_by_answer(conn: psycopg.Connection, probe_run_id) -> list[list[dict]]:
+    """For each answer that has been through extraction: the businesses it named."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT businesses_named FROM probe_results WHERE probe_run_id = %s "
+                    "AND businesses_named IS NOT NULL ORDER BY created_at, id", (probe_run_id,))
+        return [row[0] for row in cur.fetchall()]

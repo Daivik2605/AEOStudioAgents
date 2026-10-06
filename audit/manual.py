@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from audit import store
+from audit.sources import merge_sources, parse_link
+from audit.summary import build_summary
 from audit.derive import DeriveReport, derive_run
 from audit.question_set import QuestionSetError, check_not_edited, load_question_set
 from core.db import get_connection
@@ -34,6 +36,7 @@ class AuditOutcome:
     complete: bool
     missing: list[dict]
     counts: dict
+    summary: dict
     derive: DeriveReport
     version: str
     warnings: list[str] = field(default_factory=list)
@@ -118,10 +121,11 @@ def run_manual_audit(business_id: str, question_set_path: str, *, checkpoint: st
             say(f"\nReading {len(done)} answer(s) with the model to find which businesses they name...")
         derived = derive_run(conn, business, run_id, client=client)
         counts = store.summary_counts(conn, run_id)
+        summary = build_summary(store.named_businesses_by_answer(conn, run_id))
     finally:
         conn.close()
 
-    return AuditOutcome(probe_run_id=str(run_id), complete=complete, missing=missing, counts=counts,
+    return AuditOutcome(probe_run_id=str(run_id), complete=complete, missing=missing, counts=counts, summary=summary,
                         derive=derived, version=qs.version, warnings=warnings)
 
 
@@ -142,6 +146,7 @@ def _collect_one(conn, ask, say, *, run_id, question, engine, number, total, log
     say(f"Answer {number} of {total}  |  ask on: {engine.upper()}")
     say(f"Question (type it exactly as written):\n\n  {question}\n")
     answer = _read_answer(ask, say, engine)
+    pasted = _read_sources(ask, say, engine)
 
     while True:
         reply = ask(f"Did {engine} visibly search the web for this? [y/n/unclear]: ").strip().lower()
@@ -160,7 +165,8 @@ def _collect_one(conn, ask, say, *, run_id, question, engine, number, total, log
     _, repeat = store.add_result(
         conn, probe_run_id=run_id, question=question, engine=engine, raw_answer=answer,
         retrieval_activated=retrieval, engine_version=engine_version, logged_in_state=logged_in_state,
-        location_context=location, question_set_version=version)
+        location_context=location, question_set_version=version,
+        sources_cited=merge_sources(pasted, answer))
     say(f"Saved (repeat {repeat}).")
 
 
@@ -185,3 +191,21 @@ def _read_answer(ask, say, engine) -> str:
         if answer.strip():
             return answer
         say(f"That answer was empty. Paste it again, then {END_MARKER} (or {QUIT_MARKER} to stop).")
+
+
+def _read_sources(ask, say, engine) -> list[dict]:
+    """The links the engine showed, one per line. Copying the answer usually drops them, so they
+    get their own box. Type END straight away if the answer cited nothing."""
+    say(f"Now paste the links {engine} showed (its sources), one per line, then {END_MARKER}. "
+        f"If it showed none, just type {END_MARKER}.")
+    links: list[dict] = []
+    while True:
+        line = ask("").strip()
+        if line == END_MARKER:
+            return links
+        if not line:
+            continue
+        try:
+            links.append(parse_link(line))
+        except ValueError as exc:
+            say(f"Not saved: {exc}. Type it again as a full link, or skip it.")
