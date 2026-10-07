@@ -8,6 +8,7 @@ from typing import Optional
 
 import typer
 
+from audit.fill_in import ImportRefused, generate_fill_in, import_fill_in
 from audit.manual import AuditError, run_manual_audit
 from audit.summary import summary_lines
 from core.businesses import BusinessError, add_with_checks
@@ -116,44 +117,107 @@ def add(
     typer.echo("The profile is empty: no facts have been confirmed yet.")
 
 
-@app.command()
+audit_app = typer.Typer(invoke_without_command=True, add_completion=False,
+                        help="Ask the engines, store every raw answer, work out who each answer names.")
+app.add_typer(audit_app, name="audit")
+
+
+def _fail(message: str) -> None:
+    typer.secho(f"Error: {message}", fg=typer.colors.RED, err=True)
+    raise typer.Exit(1)
+
+
+def _print_run_numbers(counts: dict, summary: dict, derive, run_id: str) -> None:
+    """The short plain-English numbers shared by the terminal and fill-in routes."""
+    typer.echo(f"Answers collected: {counts['answers']}")
+    typer.echo(f"Answers that named the business: {counts['named_business']}")
+    typer.echo(f"Answers that recommended the business: {counts['recommended_business']}")
+    for line in summary_lines(summary):
+        typer.echo(line)
+    if counts["not_analysed"]:
+        typer.secho(f"{counts['not_analysed']} answer(s) could not be read by the model and were sent to the "
+                    "human queue. The raw answers are saved.", fg=typer.colors.YELLOW)
+    if derive.claim_check_failed:
+        typer.secho(f"{derive.claim_check_failed} claim check(s) failed and were sent to the human queue.",
+                    fg=typer.colors.YELLOW)
+    typer.echo(f"Run id: {run_id}")
+
+
+@audit_app.callback()
 def audit(
-    business: str = typer.Option(..., "--business", help="Business id."),
-    question_set: str = typer.Option(..., "--question-set", help="Path to the frozen question set, e.g. question_sets/oland-stations_v1.yaml"),
+    ctx: typer.Context,
+    business: Optional[str] = typer.Option(None, "--business", help="Business id."),
+    question_set: Optional[str] = typer.Option(None, "--question-set", help="Path to the frozen question set, e.g. question_sets/oland-stations_v1.yaml"),
     mode: str = typer.Option("manual", "--mode", help="manual (default). batch is not built yet."),
     checkpoint: Optional[str] = typer.Option(None, "--checkpoint", help="Free text, e.g. old_site or new_site_no_aeo."),
+    fill_in: bool = typer.Option(False, "--fill-in", help="Write a fill-in file to complete in an editor, then load it with `aeo audit import <file>`."),
+    repeats: Optional[int] = typer.Option(None, "--repeats", help="With --fill-in: how many times each question is asked on each engine (default 1)."),
 ) -> None:
     """Ask the engines (by hand), store every raw answer, then work out who each answer names."""
+    if ctx.invoked_subcommand is not None:
+        return                                     # `aeo audit import ...`
     if mode == "batch":
-        typer.secho("Error: batch mode is not built yet. It is only built after manual mode has run "
-                    "cleanly ten times (PLAN.md section 3.2).", fg=typer.colors.RED, err=True)
-        raise typer.Exit(1)
+        _fail("batch mode is not built yet. It is only built after manual mode has run cleanly ten times "
+              "(PLAN.md section 3.2).")
     if mode != "manual":
-        typer.secho(f"Error: unknown mode '{mode}'. Use manual.", fg=typer.colors.RED, err=True)
-        raise typer.Exit(1)
+        _fail(f"unknown mode '{mode}'. Use manual.")
+    if not business or not question_set:
+        _fail("--business and --question-set are both required.")
+    if repeats is not None and not fill_in:
+        _fail("--repeats only works together with --fill-in.")
+
+    if fill_in:
+        try:
+            made = generate_fill_in(business, question_set, checkpoint=checkpoint, repeats=repeats or 1)
+        except AuditError as exc:
+            _fail(str(exc))
+        for w in made.warnings:
+            typer.secho(f"WARNING: {w}", fg=typer.colors.YELLOW)
+        typer.echo(f"Fill-in file written ({made.blocks} blocks): {made.path}")
+        typer.echo(f"Fill it in with any editor, then load it with:  aeo audit import {made.path}")
+        typer.echo(f"Run id: {made.probe_run_id}")
+        return
 
     try:
         out = run_manual_audit(business, question_set, checkpoint=checkpoint, ask=input, say=typer.echo)
     except AuditError as exc:
-        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(1)
+        _fail(str(exc))
 
-    c = out.counts
     typer.echo("")
     if out.complete:
         typer.secho("Audit complete.", fg=typer.colors.GREEN, bold=True)
     else:
         typer.secho(f"Audit NOT complete: {len(out.missing)} answer(s) missing. The run is marked failed.",
                     fg=typer.colors.YELLOW, bold=True)
-    typer.echo(f"Answers collected: {c['answers']}")
-    typer.echo(f"Answers that named the business: {c['named_business']}")
-    typer.echo(f"Answers that recommended the business: {c['recommended_business']}")
-    for line in summary_lines(out.summary):
-        typer.echo(line)
-    if c["not_analysed"]:
-        typer.secho(f"{c['not_analysed']} answer(s) could not be read by the model and were sent to the "
-                    "human queue. The raw answers are saved.", fg=typer.colors.YELLOW)
-    if out.derive.claim_check_failed:
-        typer.secho(f"{out.derive.claim_check_failed} claim check(s) failed and were sent to the human queue.",
-                    fg=typer.colors.YELLOW)
-    typer.echo(f"Run id: {out.probe_run_id}")
+    _print_run_numbers(out.counts, out.summary, out.derive, out.probe_run_id)
+
+
+@audit_app.command("import")
+def import_answers(
+    file: str = typer.Argument(..., help="The filled-in sheet written by `aeo audit --fill-in`."),
+    partial: bool = typer.Option(False, "--partial", help="Save the finished blocks and leave the rest for a later import."),
+    question_set: Optional[str] = typer.Option(None, "--question-set", help="Only if the question-set file has moved."),
+) -> None:
+    """Load a filled-in sheet. By default nothing is saved unless every box is filled."""
+    try:
+        res = import_fill_in(file, partial=partial, question_set_path=question_set)
+    except ImportRefused as exc:
+        typer.secho("Nothing was saved. Fix these and import again:", fg=typer.colors.RED, err=True)
+        for problem in exc.problems:
+            typer.echo(f"  - {problem}", err=True)
+        raise typer.Exit(1)
+    except AuditError as exc:
+        _fail(str(exc))
+
+    typer.echo(f"Saved {res.saved} new answer(s). {res.already_saved} block(s) were already saved earlier and were skipped.")
+    if res.unfinished:
+        typer.secho(f"{len(res.unfinished)} thing(s) still to fill in (those blocks were not saved):", fg=typer.colors.YELLOW)
+        for problem in res.unfinished:
+            typer.echo(f"  - {problem}")
+    typer.echo("")
+    if res.complete:
+        typer.secho("Audit complete: every answer is saved.", fg=typer.colors.GREEN, bold=True)
+    else:
+        typer.secho(f"Audit not complete yet: {res.saved_total} of {res.expected_total} answers saved. "
+                    "Fill in the rest and import the same file again.", fg=typer.colors.YELLOW, bold=True)
+    _print_run_numbers(res.counts, res.summary, res.derive, res.probe_run_id)

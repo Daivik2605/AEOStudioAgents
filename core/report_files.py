@@ -40,21 +40,27 @@ def numbered_name(latest_name: str, run: int, day: date) -> str:
     return f"{stem}_run{run}_{day.isoformat()}.{suffix}"
 
 
-def write_run_files(folder: Path, files: dict[str, str | bytes], *, anchor: str, day: date) -> int:
+def write_run_files(folder: Path, files: dict[str, str | bytes], *, anchor: str, day: date,
+                    keep_latest: bool = True) -> int:
     """Writes each file as a numbered copy plus a 'latest' copy. Returns the run number.
+
+    `keep_latest=False` writes only the numbered copy. Used for a sheet a person edits by hand
+    (the audit fill-in file), where an overwritten "latest" copy next to it would only invite mistakes.
 
     `files` maps the latest name ("diagnosis.md") to its content (text or bytes).
     `anchor` is the file whose numbered copies define the run number.
     """
     folder.mkdir(parents=True, exist_ok=True)
-    _adopt_unnumbered_latest(folder, files, anchor)
+    if keep_latest:
+        _adopt_unnumbered_latest(folder, files, anchor)
     run = next_run_number(folder, anchor)
     for latest_name, content in files.items():
         data = content.encode("utf-8") if isinstance(content, str) else content
         # "xb" refuses to open an existing file, so a numbered file can never be overwritten.
         with open(folder / numbered_name(latest_name, run, day), "xb") as f:
             f.write(data)
-        (folder / latest_name).write_bytes(data)
+        if keep_latest:
+            (folder / latest_name).write_bytes(data)
     return run
 
 

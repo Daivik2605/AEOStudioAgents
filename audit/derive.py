@@ -86,10 +86,12 @@ def count_claims(claims: list[dict]) -> tuple[int, int]:
     return correct, incorrect
 
 
-def derive_run(conn: psycopg.Connection, business: dict, probe_run_id, *, client=None) -> DeriveReport:
-    """Runs extraction (and claim checking where it applies) on every answer not yet extracted."""
+def derive_run(conn: psycopg.Connection, business: dict, probe_run_id, *, client=None,
+               only_ids=None) -> DeriveReport:
+    """Runs extraction (and claim checking where it applies) on every answer not yet extracted,
+    or only on `only_ids` if given."""
     report = DeriveReport()
-    for row in store.results_to_extract(conn, probe_run_id):
+    for row in store.results_to_extract(conn, probe_run_id, only_ids):
         try:
             out = run_agent(EXTRACT, business_id=business["id"], client=client, input_data={
                 "question": row["question"], "answer": row["answer"],

@@ -8,6 +8,8 @@ from uuid import UUID
 import psycopg
 from psycopg.types.json import Jsonb
 
+from core.journal import write_journal
+
 # Profile columns that hold facts a client can confirm. Left out on purpose:
 # apparent_competitors (our guess, not their fact), schema_type (technical),
 # buyer_description, questions and questionnaire_answers (free-form working notes).
@@ -59,8 +61,10 @@ def next_repeat_number(conn: psycopg.Connection, probe_run_id, question: str, en
 def add_result(conn: psycopg.Connection, *, probe_run_id, question: str, engine: str, raw_answer: str,
                retrieval_activated: bool | None, engine_version: str | None, logged_in_state: str,
                location_context: str | None, question_set_version: str,
-               sources_cited: list[dict] | None = None) -> tuple[UUID, int]:
-    repeat = next_repeat_number(conn, probe_run_id, question, engine)
+               sources_cited: list[dict] | None = None, repeat_number: int | None = None) -> tuple[UUID, int]:
+    """Saves one raw answer. Terminal mode lets the database count the repeat; a fill-in file
+    states it (its block says "run 2 of 3"), so the caller passes it."""
+    repeat = repeat_number or next_repeat_number(conn, probe_run_id, question, engine)
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO probe_results (probe_run_id, query_text, location_context, engine, repeat_number, "
@@ -72,12 +76,17 @@ def add_result(conn: psycopg.Connection, *, probe_run_id, question: str, engine:
         return cur.fetchone()[0], repeat
 
 
-def results_to_extract(conn: psycopg.Connection, probe_run_id) -> list[dict]:
-    """Answers that have not been through extraction yet (businesses_named is still NULL)."""
+def results_to_extract(conn: psycopg.Connection, probe_run_id, only_ids=None) -> list[dict]:
+    """Answers that have not been through extraction yet (businesses_named is still NULL).
+    `only_ids` limits it to rows just saved, so an import never re-reads older rows."""
     with conn.cursor() as cur:
         cur.execute("SELECT id, query_text, raw_response_text FROM probe_results "
                     "WHERE probe_run_id = %s AND businesses_named IS NULL ORDER BY created_at, id", (probe_run_id,))
-        return [{"id": r[0], "question": r[1], "answer": r[2]} for r in cur.fetchall()]
+        rows = [{"id": r[0], "question": r[1], "answer": r[2]} for r in cur.fetchall()]
+    if only_ids is not None:
+        wanted = set(only_ids)
+        rows = [r for r in rows if r["id"] in wanted]
+    return rows
 
 
 def save_extraction(conn: psycopg.Connection, result_id, *, businesses: list[dict], named_any: bool,
@@ -119,3 +128,54 @@ def named_businesses_by_answer(conn: psycopg.Connection, probe_run_id) -> list[l
         cur.execute("SELECT businesses_named FROM probe_results WHERE probe_run_id = %s "
                     "AND businesses_named IS NOT NULL ORDER BY created_at, id", (probe_run_id,))
         return [row[0] for row in cur.fetchall()]
+
+
+ACTOR = "aeo audit"
+
+
+def start_run(conn: psycopg.Connection, *, business: dict, qs, checkpoint: str | None, engines: list[str],
+              answers_expected: int, how: str, extra: dict | None = None) -> UUID:
+    """Creates the probe_run and journals probe_started. Both capture routes (terminal and fill-in file) use this.
+    The journal entry holds the question-set fingerprint that the hash lock checks against."""
+    run_id = create_run(conn, business=business, checkpoint=checkpoint)
+    write_journal(
+        business_id=business["id"], entry_type="probe_started", actor=ACTOR,
+        description=f"Manual audit started ({how}): {qs.version}, {answers_expected} answers expected",
+        related_table="probe_runs", related_id=run_id, conn=conn,
+        details={"probe_run_id": str(run_id), "question_set_version": qs.version,
+                 "question_set_sha256": qs.fingerprint, "checkpoint": checkpoint, "engines": engines,
+                 "answers_expected": answers_expected, "capture": how, **(extra or {})})
+    return run_id
+
+
+def complete_run(conn: psycopg.Connection, *, business_id: str, run_id, answers: int) -> None:
+    finish_run(conn, run_id, complete=True)
+    write_journal(business_id=business_id, entry_type="probe_completed", actor=ACTOR,
+                  description=f"Manual audit complete: {answers} answers collected",
+                  related_table="probe_runs", related_id=run_id, conn=conn,
+                  details={"probe_run_id": str(run_id), "answers": answers})
+
+
+def get_run(conn: psycopg.Connection, run_id: str) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, business_id, status, checkpoint, run_type, mode FROM probe_runs WHERE id = %s", (run_id,))
+        r = cur.fetchone()
+    return {"id": str(r[0]), "business_id": str(r[1]), "status": r[2], "checkpoint": r[3],
+            "run_type": r[4], "mode": r[5]} if r else None
+
+
+def started_details(conn: psycopg.Connection, run_id) -> dict | None:
+    """The probe_started journal details for this run (question set version and fingerprint, repeats...)."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT details FROM client_journal WHERE entry_type = 'probe_started' "
+                    "AND details->>'probe_run_id' = %s ORDER BY created_at LIMIT 1", (str(run_id),))
+        r = cur.fetchone()
+    return r[0] if r else None
+
+
+def saved_triples(conn: psycopg.Connection, probe_run_id) -> set[tuple[str, str, int]]:
+    """(question, engine, repeat_number) of every answer already saved in this run. This is what
+    a fill-in block is matched against, so importing a file twice can never duplicate a row."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT query_text, engine, repeat_number FROM probe_results WHERE probe_run_id = %s", (probe_run_id,))
+        return {(q, e, n) for q, e, n in cur.fetchall()}

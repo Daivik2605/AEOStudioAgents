@@ -23,7 +23,7 @@ from core.journal import write_journal
 ENGINES = ["chatgpt", "perplexity"]
 END_MARKER = "END"      # a line with only this ends a pasted answer
 QUIT_MARKER = "/quit"   # as the first line of an answer: stop the whole run
-ACTOR = "aeo audit"
+ACTOR = store.ACTOR
 
 
 class AuditError(Exception):
@@ -83,14 +83,8 @@ def run_manual_audit(business_id: str, question_set_path: str, *, checkpoint: st
         except EOFError:
             raise AuditError("input ended before the run started; nothing was saved") from None
 
-        run_id = store.create_run(conn, business=business, checkpoint=checkpoint)
-        write_journal(
-            business_id=business["id"], entry_type="probe_started", actor=ACTOR,
-            description=f"Manual audit started: {qs.version}, {len(pairs)} answers expected",
-            related_table="probe_runs", related_id=run_id, conn=conn,
-            details={"probe_run_id": str(run_id), "question_set_version": qs.version,
-                     "question_set_sha256": qs.fingerprint, "checkpoint": checkpoint,
-                     "engines": ENGINES, "answers_expected": len(pairs)})
+        run_id = store.start_run(conn, business=business, qs=qs, checkpoint=checkpoint, engines=ENGINES,
+                                 answers_expected=len(pairs), how="terminal")
 
         done: set[tuple[str, str]] = set()
         try:
@@ -104,13 +98,10 @@ def run_manual_audit(business_id: str, question_set_path: str, *, checkpoint: st
 
         missing = [{"question": q, "engine": e} for q, e in pairs if (q, e) not in done]
         complete = not missing
-        store.finish_run(conn, run_id, complete=complete)
         if complete:
-            write_journal(business_id=business["id"], entry_type="probe_completed", actor=ACTOR,
-                          description=f"Manual audit complete: {len(done)} answers collected",
-                          related_table="probe_runs", related_id=run_id, conn=conn,
-                          details={"probe_run_id": str(run_id), "answers": len(done)})
+            store.complete_run(conn, business_id=business["id"], run_id=run_id, answers=len(done))
         else:
+            store.finish_run(conn, run_id, complete=False)
             write_journal(business_id=business["id"], entry_type="note", actor=ACTOR,
                           description=f"Manual audit ended early: {len(done)} of {len(pairs)} answers collected",
                           related_table="probe_runs", related_id=run_id, conn=conn,
