@@ -32,16 +32,17 @@ Three scripts:
 | `aeo audit --business <id>` | Ask the engines (manual by default), store raw answers, score |
 | `aeo recommend --business <id>` | On-page AEO files + a markdown document |
 
-**AI is used for exactly three things.** Everything else is plain Python:
-1. Extracting which businesses were named in an AI answer
-2. Checking a claim against the client's confirmed facts
+**AI is used for exactly four things.** Everything else is plain Python:
+1. Extracting which businesses were named in an AI answer (order, reasons, descriptors)
+2. Checking a claim against the client's confirmed facts (the truth document)
 3. Writing prose a person will read (the verdict explanation, the audit summary, content drafts)
+4. Drafting candidate buyer questions (`aeo questions draft`) — a person picks and freezes them; the brand name is rejected in code
 
 **Rules decide, AI explains.** A verdict comes from a lookup table with a cited source. A model turns it into a sendable paragraph. Never the reverse — if the model decides, the answer changes between runs.
 
 ## Build order (PLAN.md §13)
 
-Steps 0–2 done. **Step 3 next:** migration 014 (nullable `accuracy_probe_run_id`), lower-edge tier fix, `.gitignore`. Then `aeo diagnose`.
+PLAN.md §13 is the live status table — read it, don't trust a summary here. Stop after each step for review.
 
 ## Architecture conventions
 

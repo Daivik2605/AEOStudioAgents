@@ -1,6 +1,6 @@
 # AEOStudioAgents — Plan
 
-**Version 4.4 · 5 October 2026.** Changes since 4.3 are in the changelog at the end.
+**Version 4.5 · 7 October 2026.** Changes since 4.4 are in the changelog at the end.
 
 Read this file before doing anything in this repository. It is the source of truth. When a decision is not covered here, ask rather than assume.
 
@@ -47,8 +47,13 @@ This is the commercial flow. Everything in the repo serves it.
    ↓
 2. DEPOSIT           status: prospect → client
    ↓
-3. QUESTIONNAIRE     their confirmed facts → profile v2
+3. TRUTH DOCUMENT    questionnaire pre-filled from the diagnosis; the client
+                     confirms, corrects, adds → new profile version
                      without this we cannot judge accuracy
+   ↓
+3b. QUESTION SET     AI drafts candidate buyer questions from the truth
+                     document + diagnosis; a person picks 32 and the
+                     targets; frozen BEFORE any audit runs
    ↓
 4. AUDIT             the paid work: ask the engines, record everything
    ↓
@@ -114,7 +119,30 @@ These all come from the audit, never the diagnosis — diagnosis reads the websi
 
 **Sources need their own box.** Copying an answer out of ChatGPT or Perplexity usually drops the links. The capture asks for the cited links separately and stores them in `probe_results.sources_cited`, per engine. `aeo brief` depends on this.
 
-**Answers go in through a fill-in file, not the terminal.** `aeo audit --mode manual` writes a fill-in sheet (one section per question × engine: answer, sources, searched-the-web y/n/unclear). A person fills it in any editor — two people can split it, and it can be stopped and resumed. `aeo audit import <file>` loads it. Typing answers into the terminal stays available but is no longer the main path.
+**Answers go in through a fill-in file, not the terminal.** `aeo audit --mode manual` writes a fill-in sheet generated from one template in the code. A header (business, question-set version, checkpoint, date, operator, logged in/out, location) is filled once. Then one block per question × engine × repeat, **every item on its own line so it can be copied or pasted with one triple-click**:
+
+```markdown
+## Q3 · ChatGPT · run 1 of 3
+
+QUESTION (copy this):
+eco-friendly hydration station suppliers for weddings
+
+MODE (e.g. free-Instant, Thinking):
+
+
+SEARCHED THE WEB (y / n / unclear):
+
+
+ANSWER (paste the full answer below this line):
+
+
+LINKS IT SHOWED (one per line):
+
+
+---
+```
+
+A person fills it in any editor — two people can split it, and it can be stopped and resumed. `aeo audit import <file>` checks every box and lists exactly what is missing before saving anything. Typing answers into the terminal stays available but is no longer the main path.
 
 **Cost gate.** Before the AI extraction calls run, print a cost card (number of calls, estimated cost from `core/model_prices.json`) and require a typed `yes`, per CLAUDE.md. Manual capture itself costs nothing; only the analysis does.
 
@@ -472,7 +500,8 @@ Files are for humans. The database is the record. Both are written; neither is a
 | 10 | **Fill-in file** + `aeo audit import` | ⏭ Next |
 | 11 | **Cost gate** on audit's AI calls | |
 | 12 | **`aeo status`** — change status with a required reason (§7). The decline flow already tells people to use it | |
-| 13 | **Client facts file** + `aeo facts import` — confirmed facts into a new profile version, so claim checking and `accuracy_score` can run | |
+| 13 | **Truth document** — `aeo truth draft` (questionnaire pre-filled from the diagnosis) + `aeo truth import` (confirmed facts + story → new profile version). Replaces the v4.4 "client facts file" | |
+| 13b | **`aeo questions draft`** — AI drafts candidate buyer questions from the truth document + diagnosis (§16); a person picks and freezes | |
 | 14 | **`aeo guide`** — plain-language list of every command, when to use it, in what order | |
 | 15 | Audit report output (scores with ranges, share of voice, reasons, wrong facts) | |
 | 16 | `aeo show` (one business's history in plain sentences) + `aeo export` (context pack for Claude) | |
@@ -491,7 +520,9 @@ aeo guide                                   every command, when to use it, in or
 aeo diagnose <url> [--business <id>] [--checkpoint <name>]
 aeo audit --business <id> [--mode manual|batch] [--checkpoint <name>]
 aeo audit import <file>
-aeo facts import --business <id> <file>   client-confirmed facts → new profile version
+aeo truth draft --business <id>             questionnaire for the client, pre-filled from the diagnosis
+aeo truth import --business <id> <file>     confirmed facts + story → new profile version
+aeo questions draft --business <id>         AI-drafted candidate questions to pick from
 aeo show --business <id>                    history and next step, plain sentences
 aeo export --business <id>                  one markdown context pack for Claude
 aeo backup                                  dump the database to the backup folder
@@ -534,8 +565,33 @@ aeo queue
 
 ## 16. Team, help and hosting
 
-### Client facts (v4.4)
-Claim checking — and so `accuracy_score`, our strongest measure — only runs against facts the client has confirmed. `aeo add` creates an empty profile and nothing else fills it, so until this exists accuracy can never be measured. Same pattern as the question set: a YAML facts file (`facts/<slug>.yaml` — name variants, phone, address, service area, hours, services, languages, proof points), filled in from the questionnaire after the deposit, loaded with `aeo facts import`. Each import writes a **new** `business_profiles` version (source `client`); old versions are never edited. Facts are what the client confirmed, never our guesses — `apparent_competitors` stays out.
+### The truth document (v4.5 — replaces the v4.4 "client facts file")
+Claim checking — and so `accuracy_score`, our strongest measure — only runs against facts the client has confirmed. The truth document is how we get them, after the deposit.
+
+**`aeo truth draft` writes the questionnaire, pre-filled from the diagnosis**, so the client confirms rather than writes from scratch. Each finding code maps to a direct question — plain code, no AI. For O'land: "Your site's data names the business '11297775 Canada Inc'. What name should AI use?" · "Your site only lists a Montreal address. Where do you actually serve?" · "Opening hours are blank. Do you operate year-round, including winter?" Then a fixed standard list: founding year, services, typical customers, price ranges, languages, goals, and **"what do customers ask you before they buy?"**
+
+**One file, two parts, because they do different jobs:**
+- **Confirmed facts** — short and checkable: name variants, service area, seasons, services, languages, contact details, founding year. Each records **who confirmed it and when**. Only the client fills these, never us. This is what the audit checks AI's claims against.
+- **The story** — what they do, goals, ideal customers, what makes them different, competitors they see, what customers ask. Feeds the question writer and `aeo recommend`. Never used for scoring.
+
+`aeo truth import` writes a **new** `business_profiles` version (source `client`) each time. Old versions are never edited. `apparent_competitors` is our guess and stays out.
+
+### The question writer — `aeo questions draft`
+Writing plausible buyer questions is judgement, so it is an AI job (the fourth, alongside extraction, claim checking and prose). It drafts; a person decides. Guardrails:
+- **Scenarios = personas × places.** Personas from the truth document's ideal customers ("planning a summer festival", "corporate event planner", "wedding planner avoiding plastic"); places **only from the confirmed service area**, never guessed. Up to 5 unique questions per scenario.
+- **French for Quebec.** One French version of each Montreal/Quebec scenario — Quebec buyers ask in French and get different answers (`AEO_PLAYBOOK.md`, Canada/Quebec section).
+- **Never the brand name — enforced in Python.** Any draft containing the client's name, name variants or domain is rejected. Brand questions ("What is O'land Stations?") are added deliberately and separately.
+- **Buyer's words, not the client's.** Built only from the client's own description, questions drift into the client's vocabulary ("sustainable hydration stations") and flatter the result. The prompt says so explicitly: write how a buyer with a problem asks ("how do I keep 5,000 people hydrated at a festival without plastic bottles?").
+- **Output is a draft YAML**, each question tagged `intent` and `source: generated`. A person picks the final 32, marks the targets, mixes in real questions (`source: customer`, `source: bing grounding query`, `source: reddit`) — then it is frozen, **before any audit runs**.
+- Cost card and typed `yes` before the call, as for every paid step.
+
+The `source:` field is optional on every question in the set; it answers "why these questions?" when a client asks.
+
+### Real-question sources (free)
+- The truth document's "what do customers ask" answers — closest thing to real prompts.
+- **Bing Webmaster Tools → AI Performance**: which pages Copilot cites, how often, and the *grounding queries* it ran. Needs the site verified — without code access, via: the client adding us as a read-only user, importing from their Google Search Console, one DNS TXT record, or a meta tag pasted into their builder's settings field. Paid stage, client's permission.
+- Google "People also ask", autocomplete, Reddit threads in the client's category.
+- Paid prompt-volume tools (licensed, sampled, modelled data) — not worth it at our stage.
 
 ### `aeo guide`
 `aeo --help` lists commands; it doesn't say when to use them. `aeo guide` prints the workflow in plain sentences, in order — new prospect → `aeo add` → `aeo diagnose` → (deposit) → question set → `aeo audit` → `aeo audit import` → report → `aeo recommend` → re-audit — with one line per command on when to use it and one example. Its text lives in one file so it's updated whenever a command is added. The frontend's help page reuses it.
@@ -567,6 +623,7 @@ Every journal entry records the person, not the script: `AEO_OPERATOR=daivik` (o
 
 ## Changelog
 
+- **7 Oct 2026 — v4.5.** "Client facts file" replaced by the **truth document**: questionnaire pre-filled from the diagnosis (`aeo truth draft`), one file with confirmed facts (who confirmed, when) + the story, imported as a new profile version (`aeo truth import`). New **`aeo questions draft`**: AI drafts buyer questions from personas × confirmed places, French for Quebec, brand name rejected in code, buyer's words not the client's, person picks 32 and freezes before any audit. Optional `source:` per question. Fill-in file layout fixed with every item on its own line. Bing Webmaster Tools verification without code access. Journey (§2) updated.
 - **5 Oct 2026 — v4.4.** Build order: step 9 (extraction v2 + sources box) done. Added two missing steps found in review: `aeo status` (the decline flow already refers to it) and a client facts file + `aeo facts import` (without it, claim checking and `accuracy_score` can never run). Renumbered steps 10–21.
 - **5 Oct 2026 — v4.3.** Audit extraction widened in the same single AI call: businesses in order (share of voice), reasons given for recommendations, descriptor words, and a separate sources box in capture (§3.2). Fill-in file + `aeo audit import` replaces terminal pasting as the main path. Cost gate before audit's AI calls. New commands: `aeo guide`, `aeo show`, `aeo export`, `aeo backup`, `aeo audit import` (§13). New §16: help, context pack for Claude, operator name in the journal, and two-phase hosting — local now; with the frontend, a hosted app so Anikait uses a browser and the code is never shared (free–$7/mo plus API use). Build order rewritten with real statuses.
 
