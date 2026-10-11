@@ -426,13 +426,13 @@ def test_cli_generate_then_import_partial_then_import(biz, qfile, tmp_path, monk
     assert "header:" in refused.output and fake.messages.calls == []
 
     fill(sheet, header=HEADER, Q1_chatgpt_r1=done("one"), Q1_chatgpt_r2=done("two"))
-    part = CliRunner().invoke(app, ["audit", "import", str(sheet), "--partial"])
+    part = CliRunner().invoke(app, ["audit", "import", str(sheet), "--partial"], input="yes\n")
     assert part.exit_code == 0, part.output
     assert "Saved 2 new answer(s)." in part.output and "Audit not complete yet: 2 of 4" in part.output
     assert "Answers collected: 2" in part.output and "Named once, usually 1st" in part.output
 
     fill(sheet, Q1_perplexity_r1=done("three"), Q1_perplexity_r2=done("four"))
-    full = CliRunner().invoke(app, ["audit", "import", str(sheet)])
+    full = CliRunner().invoke(app, ["audit", "import", str(sheet)], input="yes\n")
     assert full.exit_code == 0, full.output
     assert "Saved 2 new answer(s). 2 block(s) were already saved" in full.output
     assert "Audit complete: every answer is saved." in full.output and "Answers collected: 4" in full.output

@@ -144,7 +144,7 @@ LINKS IT SHOWED (one per line):
 
 A person fills it in any editor — two people can split it, and it can be stopped and resumed. `aeo audit import <file>` checks every box and lists exactly what is missing before saving anything. Typing answers into the terminal stays available but is no longer the main path.
 
-**Cost gate.** Before the AI extraction calls run, print a cost card (number of calls, estimated cost from `core/model_prices.json`) and require a typed `yes`, per CLAUDE.md. Manual capture itself costs nothing; only the analysis does.
+**Cost gate.** Before the AI extraction calls run, print a cost card (number of calls, estimated cost from `core/model_prices.json`) and require a typed `yes`, per CLAUDE.md. Manual capture itself costs nothing; only the analysis does. **A person must be at the keyboard:** with no terminal (piped, scripted, scheduled) the audit refuses. There is no `--yes` flag or any other way around it.
 
 ### 3.3 `aeo recommend --business <id>`
 
@@ -497,9 +497,9 @@ Files are for humans. The database is the record. Both are written; neither is a
 | 7 | `aeo audit --mode manual` (terminal capture), migration 016, numbered run history | ✅ Done |
 | 8 | O'land old-site baseline | ✅ Diagnosis done (business-linked). Audit answers only in the manual snapshot sheet — by decision, the first tool audit runs after the new site is live |
 | 9 | Richer extraction (order, reasons, descriptors) + sources box — prompt v2 | ✅ Done (tested with fakes; first real run after the new site is live) |
-| 10 | **Fill-in file** + `aeo audit import` | ⏭ Next |
-| 11 | **Cost gate** on audit's AI calls | |
-| 12 | **`aeo status`** — change status with a required reason (§7). The decline flow already tells people to use it | |
+| 10 | **Fill-in file** + `aeo audit import` | ✅ Done (`--partial`, resumable) |
+| 11 | **Cost gate** on audit's AI calls | ✅ Done. Refuses with no person at the keyboard; no override flag (§3.2) |
+| 12 | **`aeo status`** — change status with a required reason (§7). The decline flow already tells people to use it | ⏭ Next |
 | 13 | **Truth document** — `aeo truth draft` (questionnaire pre-filled from the diagnosis) + `aeo truth import` (confirmed facts + story → new profile version). Replaces the v4.4 "client facts file" | |
 | 13b | **`aeo questions draft`** — AI drafts candidate buyer questions from the truth document + diagnosis (§16); a person picks and freezes | |
 | 14 | **`aeo guide`** — plain-language list of every command, when to use it, in what order | |

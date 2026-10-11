@@ -70,13 +70,18 @@ def claims_reply(*claims):
 class Operator:
     """Plays the person at the keyboard. Each entry in `lines` is one typed line."""
 
-    def __init__(self, lines):
+    def __init__(self, lines, *, approve_cost=True):
+        # The cost gate (PLAN.md 3.2) asks first. By default this person just says yes, so the
+        # script below only covers the audit itself; test_cost_gate scripts the reply instead.
+        self.approve_cost = approve_cost
         self.lines = list(lines)
         self.prompts: list[str] = []
         self.said: list[str] = []
 
     def ask(self, prompt):
         self.prompts.append(prompt)
+        if self.approve_cost and prompt == "  Type yes to continue: ":
+            return "yes"
         if not self.lines:
             raise EOFError
         return self.lines.pop(0)
@@ -382,7 +387,7 @@ def test_audit_for_an_unknown_business_is_refused(qfile):
 def test_cli_end_to_end_prints_the_short_summary(biz, qfile, monkeypatch):
     fake = FakeAnthropicClient([extraction(("Acme Refill", True, True)), extraction(("Rival Co", False, False))])
     monkeypatch.setattr("core.llm.anthropic.Anthropic", lambda: fake)
-    typed = "\n".join(["y", ""] + answer("a1") + answer("a2")) + "\n"
+    typed = "\n".join(["yes", "y", ""] + answer("a1") + answer("a2")) + "\n"
     result = CliRunner().invoke(app, ["audit", "--business", biz["id"], "--question-set",
                                       str(qfile(questions=(Q1,))), "--checkpoint", "old_site"], input=typed)
     assert result.exit_code == 0, result.output
@@ -807,7 +812,7 @@ def test_cli_end_to_end_prints_the_two_new_summary_lines(biz, qfile, monkeypatch
     fake = FakeAnthropicClient([extraction(("Rival", False, True), ("Acme Refill", True, False)),
                                 extraction(("Rival", False, False))])
     monkeypatch.setattr("core.llm.anthropic.Anthropic", lambda: fake)
-    typed = "\n".join(["y", ""] + answer("a1") + answer("a2")) + "\n"
+    typed = "\n".join(["yes", "y", ""] + answer("a1") + answer("a2")) + "\n"
     result = CliRunner().invoke(app, ["audit", "--business", biz["id"], "--question-set",
                                       str(qfile(questions=(Q1,)))], input=typed)
     assert result.exit_code == 0, result.output

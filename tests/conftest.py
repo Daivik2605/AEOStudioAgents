@@ -19,6 +19,7 @@ collide with each other.
 
 from __future__ import annotations
 
+import io
 import os
 import uuid
 from dataclasses import dataclass
@@ -136,3 +137,14 @@ def _no_real_network(monkeypatch):
     def _refuse():
         raise AssertionError("a test tried to make a real HTTP request: pass in a Fetcher with a fake transport")
     monkeypatch.setattr("diagnose.fetch.make_client", _refuse)
+
+
+# ---- the cost gate needs a person at a keyboard; tests pretend there is one ------
+
+@pytest.fixture(autouse=True)
+def _pretend_a_terminal(monkeypatch):
+    """pytest has no terminal, and the cost gate now refuses to run without one. Tests act as
+    the person: a terminal is present and anyone asked to approve the cost hears "yes". The tests
+    that check the no-terminal refusal switch it back off (`no_tty`)."""
+    monkeypatch.setattr("audit.cost_gate.stdin_is_tty", lambda: True)
+    monkeypatch.setattr("sys.stdin", io.StringIO("yes\n" * 50))

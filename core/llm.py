@@ -56,6 +56,11 @@ def _cost(price: dict[str, float], input_tokens: int, output_tokens: int) -> flo
     )
 
 
+def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    """What a call of this size would cost, from core/model_prices.json. Raises if the model has no price."""
+    return _cost(_price_for(model), input_tokens, output_tokens)
+
+
 def _log_run(
     *,
     business_id: str | UUID,

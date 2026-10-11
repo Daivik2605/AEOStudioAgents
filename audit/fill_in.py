@@ -22,7 +22,8 @@ from pathlib import Path
 from uuid import UUID
 
 from audit import store
-from audit.derive import DeriveReport, derive_run
+from audit.cost_gate import confirm_cost
+from audit.derive import EXTRACT, DeriveReport, derive_run
 from audit.manual import ACTOR, ENGINES, AuditError
 from audit.question_set import QuestionSet, QuestionSetError, check_not_edited, load_question_set
 from audit.sources import merge_sources, parse_link
@@ -296,7 +297,7 @@ class ImportResult:
 
 
 def import_fill_in(path: str | Path, *, partial: bool = False, question_set_path: str | None = None,
-                   client=None) -> ImportResult:
+                   client=None, ask=input, say=print) -> ImportResult:
     path = Path(path)
     if not path.is_file():
         raise AuditError(f"fill-in file not found: {path}")
@@ -375,6 +376,11 @@ def import_fill_in(path: str | Path, *, partial: bool = False, question_set_path
         logged_in_state = _logged_value(sheet.boxes[LOGGED_LABEL])
         location = sheet.boxes.get(LOCATION_LABEL) or None
         operator = sheet.boxes[OPERATOR_LABEL]
+
+        # The cost gate comes before anything is saved: say no and the file can simply be imported later.
+        # Only blocks about to be saved are counted; answers saved by an earlier import are not read again.
+        confirm_cost(len(to_save), model=EXTRACT.model,
+                     claim_checks=len(to_save) if business["facts"] else 0, ask=ask, say=say)
 
         new_ids = []
         with conn.transaction():                 # all of this file's new answers, or none of them

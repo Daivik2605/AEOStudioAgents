@@ -14,7 +14,8 @@ from typing import Callable
 from audit import store
 from audit.sources import merge_sources, parse_link
 from audit.summary import build_summary
-from audit.derive import DeriveReport, derive_run
+from audit.cost_gate import confirm_cost
+from audit.derive import EXTRACT, DeriveReport, derive_run
 from audit.question_set import QuestionSetError, check_not_edited, load_question_set
 from core.db import get_connection
 from core.journal import write_journal
@@ -76,6 +77,10 @@ def run_manual_audit(business_id: str, question_set_path: str, *, checkpoint: st
             say("")
         say("For every answer: use a logged-out or incognito window, start a fresh chat for each question,\n"
             "and copy the full answer exactly as shown.\n")
+
+        # Approve the spend before a person spends hours typing: nothing is created or saved until they say yes.
+        confirm_cost(len(pairs), model=EXTRACT.model, claim_checks=len(pairs) if business["facts"] else 0,
+                     ask=ask, say=say)
 
         try:
             logged_in_state = _ask_logged_out(ask, say)

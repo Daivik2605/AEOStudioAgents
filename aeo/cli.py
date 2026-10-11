@@ -8,6 +8,7 @@ from typing import Optional
 
 import typer
 
+from audit.cost_gate import CostGateAborted
 from audit.fill_in import ImportRefused, generate_fill_in, import_fill_in
 from audit.manual import AuditError, run_manual_audit
 from audit.summary import summary_lines
@@ -180,6 +181,8 @@ def audit(
 
     try:
         out = run_manual_audit(business, question_set, checkpoint=checkpoint, ask=input, say=typer.echo)
+    except CostGateAborted:
+        raise typer.Exit(1)                        # "Aborted." was already printed; nothing was saved
     except AuditError as exc:
         _fail(str(exc))
 
@@ -200,7 +203,9 @@ def import_answers(
 ) -> None:
     """Load a filled-in sheet. By default nothing is saved unless every box is filled."""
     try:
-        res = import_fill_in(file, partial=partial, question_set_path=question_set)
+        res = import_fill_in(file, partial=partial, question_set_path=question_set, ask=input, say=typer.echo)
+    except CostGateAborted:
+        raise typer.Exit(1)                        # "Aborted." was already printed; nothing was saved
     except ImportRefused as exc:
         typer.secho("Nothing was saved. Fix these and import again:", fg=typer.colors.RED, err=True)
         for problem in exc.problems:
