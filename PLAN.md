@@ -1,6 +1,6 @@
 # AEOStudioAgents — Plan
 
-**Version 4.5 · 7 October 2026.** Changes since 4.4 are in the changelog at the end.
+**Version 4.6 · 10 October 2026.** Changes since 4.5 are in the changelog at the end.
 
 Read this file before doing anything in this repository. It is the source of truth. When a decision is not covered here, ask rather than assume.
 
@@ -499,17 +499,21 @@ Files are for humans. The database is the record. Both are written; neither is a
 | 9 | Richer extraction (order, reasons, descriptors) + sources box — prompt v2 | ✅ Done (tested with fakes; first real run after the new site is live) |
 | 10 | **Fill-in file** + `aeo audit import` | ✅ Done (`--partial`, resumable) |
 | 11 | **Cost gate** on audit's AI calls | ✅ Done. Refuses with no person at the keyboard; no override flag (§3.2) |
-| 12 | **`aeo status`** — change status with a required reason (§7). The decline flow already tells people to use it | ⏭ Next |
-| 13 | **Truth document** — `aeo truth draft` (questionnaire pre-filled from the diagnosis) + `aeo truth import` (confirmed facts + story → new profile version). Replaces the v4.4 "client facts file" | |
+| | **Core path — build these first (decided 10 Oct 2026)** | |
+| 13 | **Truth document** — `aeo truth draft` (questionnaire pre-filled from the diagnosis) + `aeo truth import` (confirmed facts + story → new profile version). Replaces the v4.4 "client facts file" | ⏭ Next |
+| 15 | Audit report output (scores with ranges, share of voice, reasons, wrong facts) | |
+| 19 | **`aeo recommend`** — includes the draft validator | |
+| | **After the core path** | |
+| 12 | **`aeo status`** — change status with a required reason (§7). The decline flow already tells people to use it | |
 | 13b | **`aeo questions draft`** — AI drafts candidate buyer questions from the truth document + diagnosis (§16); a person picks and freezes | |
 | 14 | **`aeo guide`** — plain-language list of every command, when to use it, in what order | |
-| 15 | Audit report output (scores with ranges, share of voice, reasons, wrong facts) | |
 | 16 | `aeo show` (one business's history in plain sentences) + `aeo export` (context pack for Claude) | |
 | 17 | `aeo backup` + Supabase move (see §16) | |
 | 18 | **`aeo brief`** — citation aggregation, content brief + outreach list | |
-| 19 | **`aeo recommend`** — includes the draft validator | |
 | 20 | Re-audit and compare | |
 | 21 | Frontend + hosting (see §16) | |
+
+**Build in the order listed, not by number.** Step numbers are kept so old references still work. The core path is what the product exists for: diagnose → audit → the fix files (robots.txt, llms.txt, JSON-LD) and the fix list. Question sets are written by hand for now; `aeo questions draft` (13b) comes later. `aeo recommend` names off-site work in general terms until `aeo brief` (18) exists.
 
 Stop after each step for review. Do not build ahead.
 
@@ -632,5 +636,7 @@ Every journal entry records the person, not the script: `AEO_OPERATOR=daivik` (o
 - **2 Oct 2026 — v4.1.** Added `aeo brief --business <id>` (§3.5) — pure SQL/Python aggregation of `sources_cited` already captured by `aeo audit`, giving both the content brief (what's winning a target question) and the outreach list (candidate domains for `recommendations.off_site_sources`), closing steps 2 and 4 of "working a target prompt" (§6) without any new AI calls. Added a `questions` table (§9) carrying `intent` (commercial/informational/navigational) and `is_target`, so targeting is tagged data rather than memory, and `aeo audit` warns against targeting informational questions. Added a draft-citability checklist to `aeo recommend` (§3.3) — name up front, a statistic, a quote, a direct answer, and one model-assisted distinctiveness check against `aeo brief`'s findings. Build order and CLI updated (§13).
 - **2 Oct 2026 — v4.0.** Four agents replaced by three scripts (`diagnose`, `audit`, `recommend`); AI only for extraction, claim-checking and prose. Diagnosis added as a free, code-only qualification step with sourced serve/conditional/decline rules (§5); a decline is documented automatically and a migration pitch needs human approval. Deposit moved before the audit (§2). `diagnoses` table added, `probe_results` and `probe_runs` extended (§9). Measurement honesty rules made explicit — two designs, brand-free rate, mentioned vs recommended, retrieval activation, ranges on every score, the 20-point detection floor (§8). What we can and cannot promise written down (§6). Storage and checkpoints made a first-class requirement (§10). `business-profiler` deferred. Research documents added under `research/`.
 - **29 Sep 2026 — v3.2.** Reason required for `declined`/`rejected`, recorded as a journal note linked to the status change. `aeo status --reason`. Gate declines journal the reason.
+
+- **10 Oct 2026 — v4.6.** Step 11 (cost gate) done: refuses with no person at the keyboard, no override flag (§3.2). Build order split into a core path (13 truth document → 15 audit report → 19 recommend) and everything else after. Question sets written by hand for now.
 
 *Changes to this plan are deliberate and dated.*
