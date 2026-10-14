@@ -9,34 +9,35 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from core.journal import write_journal
+from core.profiles import confirmed_facts
 
-# Profile columns that hold facts a client can confirm. Left out on purpose:
-# apparent_competitors (our guess, not their fact), schema_type (technical),
-# buyer_description, questions and questionnaire_answers (free-form working notes).
-FACT_FIELDS = [
-    "industry", "customer_type", "reach", "offering", "services",
-    "location_city", "location_region", "location_country", "service_area",
-    "address", "phone", "email", "hours", "social_profiles", "languages",
-    "alternate_names", "proof_points",
-]
+def load_business_and_profile(conn: psycopg.Connection, business_id: str, profile_id: str | None = None) -> dict | None:
+    """The business plus one profile version, or None if there is no such business.
 
+    With no `profile_id` that is the newest version (what a run that is starting should use). To judge
+    a run that already started, pass the profile id stored on the run, so an old audit is always judged
+    against the facts of its time.
 
-def load_business_and_profile(conn: psycopg.Connection, business_id: str) -> dict | None:
-    """The business plus its newest profile (id and confirmed facts), or None if there is no such business."""
+    `facts` holds only the facts the client CONFIRMED in a truth document (PLAN.md section 16). Anything
+    unconfirmed, and everything in the story, is left out on purpose: it must never mark an answer wrong.
+    """
     with conn.cursor() as cur:
         cur.execute("SELECT id, name, domain FROM businesses WHERE id = %s", (business_id,))
         row = cur.fetchone()
         if row is None:
             return None
-        business = {"id": str(row[0]), "name": row[1], "domain": row[2], "profile_id": None, "facts": []}
-        cur.execute(f"SELECT id, {', '.join(FACT_FIELDS)} FROM business_profiles "
-                    "WHERE business_id = %s ORDER BY version DESC LIMIT 1", (business_id,))
+        business = {"id": str(row[0]), "name": row[1], "domain": row[2], "profile_id": None,
+                    "profile_version": None, "facts": []}
+        if profile_id:
+            cur.execute("SELECT id, version, facts FROM business_profiles WHERE business_id = %s AND id = %s",
+                        (business_id, profile_id))
+        else:
+            cur.execute("SELECT id, version, facts FROM business_profiles WHERE business_id = %s "
+                        "ORDER BY version DESC LIMIT 1", (business_id,))
         profile = cur.fetchone()
     if profile:
-        business["profile_id"] = str(profile[0])
-        # An empty list or an empty string is not a fact, any more than NULL is.
-        business["facts"] = [{"field": f, "value": v} for f, v in zip(FACT_FIELDS, profile[1:])
-                             if v not in (None, "", [], {})]
+        business["profile_id"], business["profile_version"] = str(profile[0]), profile[1]
+        business["facts"] = confirmed_facts(profile[2])
     return business
 
 
@@ -144,6 +145,7 @@ def start_run(conn: psycopg.Connection, *, business: dict, qs, checkpoint: str |
         related_table="probe_runs", related_id=run_id, conn=conn,
         details={"probe_run_id": str(run_id), "question_set_version": qs.version,
                  "question_set_sha256": qs.fingerprint, "checkpoint": checkpoint, "engines": engines,
+                 "profile_id": business["profile_id"], "profile_version": business["profile_version"],
                  "answers_expected": answers_expected, "capture": how, **(extra or {})})
     return run_id
 
@@ -158,10 +160,11 @@ def complete_run(conn: psycopg.Connection, *, business_id: str, run_id, answers:
 
 def get_run(conn: psycopg.Connection, run_id: str) -> dict | None:
     with conn.cursor() as cur:
-        cur.execute("SELECT id, business_id, status, checkpoint, run_type, mode FROM probe_runs WHERE id = %s", (run_id,))
+        cur.execute("SELECT id, business_id, status, checkpoint, run_type, mode, business_profile_id "
+                    "FROM probe_runs WHERE id = %s", (run_id,))
         r = cur.fetchone()
     return {"id": str(r[0]), "business_id": str(r[1]), "status": r[2], "checkpoint": r[3],
-            "run_type": r[4], "mode": r[5]} if r else None
+            "run_type": r[4], "mode": r[5], "profile_id": str(r[6])} if r else None
 
 
 def started_details(conn: psycopg.Connection, run_id) -> dict | None:

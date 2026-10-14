@@ -305,6 +305,19 @@ def run_one_question(biz, qfile, replies):
     return out, client
 
 
+def confirm_facts(biz, facts=None, **confirmed):
+    """Saves a new profile version holding these facts. `confirmed` are label=value pairs the client confirmed;
+    `facts` are ready-made fact dicts (for unconfirmed ones)."""
+    from core.profiles import save_new_version
+    entries = [{"label": k.replace("_", " "), "value": v, "status": "confirmed", "confirmed_by": "Jean",
+                "confirmed_on": "2026-10-01"} for k, v in confirmed.items()] + list(facts or [])
+    conn = get_connection()
+    try:
+        return save_new_version(conn, biz["id"], facts=entries, story={})
+    finally:
+        conn.close()
+
+
 def agents_logged(biz):
     return [r[0] for r in query("SELECT agent FROM runs WHERE business_id = %s ORDER BY created_at, id", (biz["id"],))]
 
@@ -320,27 +333,18 @@ def test_claim_check_is_not_called_when_there_are_no_confirmed_facts(biz, qfile)
                  (out.probe_run_id,))[0][0] == 0
 
 
-def test_an_empty_list_or_empty_text_is_not_a_confirmed_fact(biz, qfile):
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE business_profiles SET services = '{}', phone = '' WHERE business_id = %s", (biz["id"],))
-    finally:
-        conn.close()
+def test_unconfirmed_and_empty_facts_are_not_confirmed_facts(biz, qfile):
+    confirm_facts(biz, facts=[
+        {"label": "Phone", "value": "514-555-0100", "status": "unconfirmed", "confirmed_by": None, "confirmed_on": None},
+        {"label": "Services", "value": "", "status": "confirmed", "confirmed_by": "Jean", "confirmed_on": "2026-10-01"}])
     out, client = run_one_question(biz, qfile, [extraction(("Acme Refill", True, True))] * 2)
-    assert len(client.messages.calls) == 2
+    assert len(client.messages.calls) == 2                                  # extraction only: nothing was confirmed
 
 
 def test_claim_check_runs_when_facts_exist_and_the_client_is_named(biz, qfile):
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE business_profiles SET phone = '514-555-0100', location_city = 'Montreal' "
-                        "WHERE business_id = %s", (biz["id"],))
-    finally:
-        conn.close()
-    claims = claims_reply(("Phone is 514-555-0100", "phone", "correct"),
-                          ("Only serves Ontario", "location_city", "incorrect"),
+    confirm_facts(biz, Phone="514-555-0100", Areas_we_serve="Montreal")
+    claims = claims_reply(("Phone is 514-555-0100", "Phone", "correct"),
+                          ("Only serves Ontario", "Areas we serve", "incorrect"),
                           ("Founded in 2015", None, "unverifiable"))
     out, client = run_one_question(biz, qfile, [
         extraction(("Acme Refill", True, False)), claims,        # answer 1: client named -> checked
@@ -350,7 +354,7 @@ def test_claim_check_runs_when_facts_exist_and_the_client_is_named(biz, qfile):
     assert agents_logged(biz) == ["audit_extract", "audit_claim_check", "audit_extract"]
 
     sent = json.loads(client.messages.calls[1]["messages"][0]["content"])
-    assert {f["field"] for f in sent["confirmed_facts"]} == {"phone", "location_city"}
+    assert {f["field"] for f in sent["confirmed_facts"]} == {"Phone", "Areas we serve"}
 
     stored = query("SELECT claims_checked FROM probe_results WHERE probe_run_id = %s AND claims_checked IS NOT NULL",
                    (out.probe_run_id,))

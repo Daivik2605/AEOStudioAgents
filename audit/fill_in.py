@@ -329,7 +329,8 @@ def import_fill_in(path: str | Path, *, partial: bool = False, question_set_path
             raise AuditError(f"probe run {run_id} has no start record in the journal")
         if run["status"] == "failed":
             raise AuditError("this probe run was marked failed, so it cannot take more answers")
-        business = store.load_business_and_profile(conn, run["business_id"])
+        # Judged against the facts that were confirmed when the run STARTED, not whatever is newest now.
+        business = store.load_business_and_profile(conn, run["business_id"], run["profile_id"])
 
         qs_path = question_set_path or sheet.keys.get("QUESTION SET FILE")
         if not qs_path:

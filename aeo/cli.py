@@ -19,6 +19,8 @@ from core.businesses import (ACCESS_LEVELS, ENGAGEMENT_TYPES, BusinessError, add
 from core.checkpoints import CHECKPOINTS, CheckpointError
 from core.db import get_connection
 from core.operator import operator_name
+from truth import draft as truth_draft
+from truth.importer import TruthImportAborted, TruthImportError, TruthImportRefused, import_truth
 from diagnose import platform_data as pd
 from diagnose.report import decline_pitch_outline
 from diagnose.run import DiagnoseError, run_diagnosis
@@ -456,3 +458,62 @@ def files_migrate_cmd(
     done = files_migrate.apply_plan(plan)
     typer.secho(f"Copied {len(done)} file(s).", fg=typer.colors.GREEN)
     typer.echo("reports/ was not touched. When you are happy with clients/, delete reports/ by hand.")
+
+
+# ---- the truth document (PLAN.md section 16) ----------------------------------------------------------------
+
+truth_app = typer.Typer(add_completion=False, no_args_is_help=True,
+                        help="What is true about the business: facts the client confirms, and their story.")
+app.add_typer(truth_app, name="truth")
+
+
+@truth_app.command("draft")
+def truth_draft_cmd(
+    business: str = typer.Option(..., "--business", help="Business id, domain or name."),
+) -> None:
+    """Write the questionnaire for the client, pre-filled from the latest diagnosis."""
+    b = _find_business(business)
+    conn = get_connection()
+    try:
+        made = truth_draft.generate_draft(conn, b)
+    finally:
+        conn.close()
+    typer.echo(f"Truth document written: {made.path}")
+    if made.from_site:
+        typer.echo(f"{made.from_site} fact(s) were pre-filled from the site's structured data in the latest diagnosis.")
+    if made.from_record:
+        typer.echo(f"{made.from_record} fact(s) were pre-filled from what was entered when the business was added.")
+    if made.from_site or made.from_record:
+        typer.echo("All pre-filled facts are marked unconfirmed: they are guesses for the client to check.")
+    if not made.diagnosis_used:
+        typer.secho("There is no diagnosis for this business yet, so nothing could be pre-filled from the site. "
+                    "Run `aeo diagnose` first if you want the guesses.", fg=typer.colors.YELLOW)
+    if made.carried_forward:
+        typer.echo(f"{made.carried_forward} fact(s) were carried over from profile version {made.based_on_version}, "
+                   "with their confirmation kept.")
+    typer.echo(f"Send it to the client. When it comes back filled in:  aeo truth import --business {b['domain']} <file>")
+
+
+@truth_app.command("import")
+def truth_import_cmd(
+    file: Path = typer.Argument(..., help="The filled-in truth document."),
+    business: str = typer.Option(..., "--business", help="Business id, domain or name."),
+) -> None:
+    """Save a filled-in truth document as a new profile version (after you read the changes and type yes)."""
+    b = _find_business(business)
+    try:
+        res = import_truth(b, file, ask=input, say=typer.echo)
+    except TruthImportAborted:
+        raise typer.Exit(1)                        # the reason was already printed; nothing was saved
+    except TruthImportRefused as exc:
+        typer.secho("Nothing was saved. Fix these and import again:", fg=typer.colors.RED, err=True)
+        for problem in exc.problems:
+            typer.echo(f"  - {problem}", err=True)
+        raise typer.Exit(1)
+    except TruthImportError as exc:
+        _fail(str(exc))
+    if not res.saved:
+        return
+    typer.secho(f"Saved as profile version {res.version}.", fg=typer.colors.GREEN, bold=True)
+    typer.echo(f"{res.confirmed} confirmed fact(s), {res.unconfirmed} unconfirmed.")
+    typer.echo(f"A copy of the filled file is kept in: {res.evidence_copy}")

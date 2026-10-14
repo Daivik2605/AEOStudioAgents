@@ -17,7 +17,7 @@ from audit.manual import run_manual_audit
 from conftest import FakeAnthropicClient
 from core.db import get_connection
 from core.llm import estimate_cost
-from tests.test_audit import Operator, answer, audit, biz, extraction, qfile, query  # noqa: F401
+from tests.test_audit import Operator, answer, audit, biz, confirm_facts, extraction, qfile, query  # noqa: F401
 from tests.test_fill_in import HEADER, all_done, done, fill, generate, ids  # noqa: F401
 
 PRICES = json.loads((Path(__file__).parent.parent / "core" / "model_prices.json").read_text())
@@ -177,12 +177,7 @@ def test_import_without_a_terminal_aborts_and_saves_nothing(biz, qfile, tmp_path
 
 
 def test_the_card_mentions_claim_checks_when_the_business_has_confirmed_facts(biz, qfile, tmp_path, tty):
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE business_profiles SET phone = '514-555-0100' WHERE business_id = %s", (biz["id"],))
-    finally:
-        conn.close()
+    confirm_facts(biz, Phone="514-555-0100")
     path, made = generate(biz, qfile, tmp_path, questions=(Q1,))
     all_done(made.path, question_count=1)
     said = []
