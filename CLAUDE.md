@@ -118,7 +118,7 @@ These rules exist to stop us overstating what we measured.
 
 ## Storage
 
-Every report kept forever, per checkpoint, under `reports/<business-slug>/<checkpoint>/`. Files are for humans; the database is the record. Both are written.
+The database is the record. Files live in `clients/<domain>/`: `evidence/` (things that came in — kept forever, never overwritten) and `generated/` (tool output — rebuildable, never hand-edited), date-named. Checkpoints are four fixed labels: `before` · `after_site` · `after_aeo` · `check` (PLAN.md §10). `clients/` is gitignored.
 
 ## Lessons from the build (do not repeat these)
 

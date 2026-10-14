@@ -1,6 +1,6 @@
 # AEOStudioAgents — Plan
 
-**Version 4.6 · 10 October 2026.** Changes since 4.5 are in the changelog at the end.
+**Version 4.7 · 14 October 2026.** Changes since 4.5 are in the changelog at the end.
 
 Read this file before doing anything in this repository. It is the source of truth. When a decision is not covered here, ask rather than assume.
 
@@ -74,6 +74,21 @@ This is the commercial flow. Everything in the repo serves it.
 **The deposit moved.** In v3.2 the audit was free, given to prospects to win them. It is now paid work, because in manual mode it is hours of a person's time. The free hook is the diagnosis, which costs us nothing.
 
 **Most diagnosis fixes also help ordinary SEO.** Say so in the pitch — it widens the sale and it is true.
+
+### Engagement types (v4.7)
+
+Not every client follows the whole journey. Each business records one engagement type and the access we have; the steps that apply follow from them.
+
+| Type | What we're hired for | Checkpoints |
+|---|---|---|
+| **A. AEO only** | Client keeps their site; we optimise it | `before` → `after_aeo` → `check` … |
+| **B. Web dev + AEO** | We build a new site, then optimise (O'land) | `before` (old site) → `after_site` → `after_aeo` → `check` … |
+| **C. Web dev only** | New site, no AEO yet — a later upsell | `before` → `after_site` |
+| **D. Migration pitch** | Diagnosis says the platform can't carry the work; we propose a move | `before`; becomes B if they agree |
+| **E. Prospect only** | Diagnosis before payment; may never sign | `before` |
+| **F. Declined / rejected** | We or they said no | whatever exists; evidence of why is kept |
+
+**Access level:** `none` · `cms` (builder login) · `hosting` (DNS/CDN/host dashboard) · `full` (we built or control it). With less access, checks we can't do ourselves become requests to the client, and their screenshot is stored as evidence.
 
 ---
 
@@ -412,7 +427,7 @@ Add: `retrieval_activated`, `engine_version` (model **and** reasoning mode — I
 
 ### Changes to `probe_runs`
 
-Add `checkpoint` — `old_site` · `new_site_no_aeo` · `post_aeo` · `quarterly_YYYY_QN`.
+Add `checkpoint` — one of four fixed values, the same for every client: `before` · `after_site` · `after_aeo` · `check` (see §10). The date tells repeated `check`s apart.
 
 ### Fix to `recommendations`
 
@@ -430,19 +445,42 @@ Postgres 16 in Docker on **port 5434** (5432 and 5433 taken). Dev database `aeo`
 
 ## 10. Storage
 
-**Every report is kept, forever, for every checkpoint.** Before and after is not optional — it is the product.
+**Rewritten in v4.7.** Folders named after one client's story (`new_site_no_aeo`) don't fit an AEO-only client. The rule is now simpler.
+
+**The database is the record.** Files are one of two kinds:
+
+| Kind | What | Recreatable? |
+|---|---|---|
+| **Evidence** | Things that came **in**: host/CDN reports (e.g. Cloudflare AI Crawl Control), screenshots of AI answers, filled audit sheets, `raw_page.html`, client emails and approvals | **No — keep forever, back up** |
+| **Generated** | Things the tool **made** from the database: diagnosis reports, audit reports, client reports, robots.txt / llms.txt / schema files | **Yes — delete and rebuild any time; never hand-edit** |
 
 ```
-reports/<business-slug>/<checkpoint>/
-    diagnosis.md
-    diagnosis.json
-    audit.md
-    audit.pdf
-    recommendations.md
-    generated/            robots.txt, llms.txt, schema.json
+clients/<domain>/
+    evidence/      <YYYY-MM-DD>_<name>.<ext>            originals, never overwritten
+    generated/     <YYYY-MM-DD>_<kind>[_runN].<ext>     tool output
+    work_log.md    regenerated from the journal
+    timeline.md    regenerated from the journal
 ```
 
-Files are for humans. The database is the record. Both are written; neither is authoritative alone.
+No stage folders — sorting by date shows the client's whole history. **`clients/` is gitignored; client data never goes into git.**
+
+### Checkpoints are labels, not folders
+
+Every diagnosis, audit run and evidence record carries one checkpoint label in the database. Four values, the same for every client: `before` (before any of our work) · `after_site` (we built the site, no AEO yet — web-dev clients only) · `after_aeo` · `check` (each 3-monthly check; the date tells them apart). Comparisons pick by label: "`before` vs `after_aeo`". Anything else is refused.
+
+O'land's existing data moves across: `old_site` → `before`, `new_site_no_aeo` → `after_site`.
+
+### Evidence records
+
+`aeo evidence add` copies the file into `evidence/` and records eight things: **what** it is (type, e.g. `cdn_report`, `ai_answer_screenshot`, `client_email`), **from** whom (`us` or `client`), **captured** date and the **period it covers**, **checkpoint**, **note** (what we understood from it), the **finding code** it relates to (optional), whether the **client may see it**, and **who** added it. Client reports include only evidence marked client-visible, so internal notes never leak.
+
+### Work log and events
+
+`aeo log` records each piece of work done for the client (dated, who, optional finding code it closes, optional file). `aeo event` records things outside our control that can move the numbers: the client changed their own site, an engine shipped a new model, the client approved something. Both feed the client report and the timeline.
+
+### Long run
+
+Now: Postgres in Docker on Daivik's Mac, files in `clients/` on the Mac. With the frontend: the database moves to Supabase and `evidence/` + `generated/` move to object storage (Supabase Storage or Cloudflare R2), same layout. **Only the database and `evidence/` need backing up** — `generated/` can always be rebuilt.
 
 **When a client wants a new website, diagnose and audit the old one first** — if budget allows and the cost is reasonable. Once the new site is live the old state is gone and no before/after is possible.
 
@@ -500,9 +538,12 @@ Files are for humans. The database is the record. Both are written; neither is a
 | 10 | **Fill-in file** + `aeo audit import` | ✅ Done (`--partial`, resumable) |
 | 11 | **Cost gate** on audit's AI calls | ✅ Done. Refuses with no person at the keyboard; no override flag (§3.2) |
 | | **Core path — build these first (decided 10 Oct 2026)** | |
-| 13 | **Truth document** — `aeo truth draft` (questionnaire pre-filled from the diagnosis) + `aeo truth import` (confirmed facts + story → new profile version). Replaces the v4.4 "client facts file" | ⏭ Next |
+| 13c | **Storage layout + engagement + evidence + work log** (§10, §2): `clients/<domain>/evidence\|generated`, fixed checkpoint labels, move O'land's files across, engagement type + access level on the business, `aeo evidence add/list`, `aeo log`, `aeo event`, `aeo timeline` | ⏭ Next — before 13, so the truth document is written into the new layout |
+| 13 | **Truth document** — `aeo truth draft` (questionnaire pre-filled from the diagnosis) + `aeo truth import` (confirmed facts + story → new profile version). Replaces the v4.4 "client facts file" | |
 | 15 | Audit report output (scores with ranges, share of voice, reasons, wrong facts) | |
 | 19 | **`aeo recommend`** — includes the draft validator | |
+| 20 | **Compare** — moved up in v4.7. Any two checkpoints: diagnosis findings closed/open/new by code, audit numbers side by side | |
+| 22 | **Client report** — one designed HTML file (prints to PDF) per stage: starting point, work done, results, quarterly check. Python builds numbers and tables; AI writes only short summaries; only client-visible evidence; numbered versions; saves the data it used so it can be rebuilt identically | |
 | | **After the core path** | |
 | 12 | **`aeo status`** — change status with a required reason (§7). The decline flow already tells people to use it | |
 | 13b | **`aeo questions draft`** — AI drafts candidate buyer questions from the truth document + diagnosis (§16); a person picks and freezes | |
@@ -510,10 +551,13 @@ Files are for humans. The database is the record. Both are written; neither is a
 | 16 | `aeo show` (one business's history in plain sentences) + `aeo export` (context pack for Claude) | |
 | 17 | `aeo backup` + Supabase move (see §16) | |
 | 18 | **`aeo brief`** — citation aggregation, content brief + outreach list | |
-| 20 | Re-audit and compare | |
 | 21 | Frontend + hosting (see §16) | |
+| 23 | **Explain budget** — every command ends with "what this means / what to do next"; runs without asking under `AEO_EXPLAIN_BUDGET` per command; Python supplies every number and the next step, AI only words them; saved into the report | |
+| 24 | **`aeo next`** + checklist — the next step for a business from its saved progress and engagement type; manual checks (Cloudflare, Bing WMT, redirects) ticked with `aeo check … --note` | |
+| 25 | **Diagnose additions** — CDN/host detection from response headers; migration check (fetch the old site's sitemap, confirm every old URL redirects) | |
+| 26 | **AEO Studio Coach** — a Claude skill + one Claude Project per client (§16) | |
 
-**Build in the order listed, not by number.** Step numbers are kept so old references still work. The core path is what the product exists for: diagnose → audit → the fix files (robots.txt, llms.txt, JSON-LD) and the fix list. Question sets are written by hand for now; `aeo questions draft` (13b) comes later. `aeo recommend` names off-site work in general terms until `aeo brief` (18) exists.
+**Build in the order listed, not by number.** Step numbers are kept so old references still work. The core path is what the product exists for, and what justifies the price: diagnose → audit → report → the fix list → evidence of the work → compare → the client report. Question sets are written by hand for now; `aeo questions draft` (13b) comes later. `aeo recommend` names off-site work in general terms until `aeo brief` (18) exists.
 
 Stop after each step for review. Do not build ahead.
 
@@ -524,6 +568,12 @@ aeo guide                                   every command, when to use it, in or
 aeo diagnose <url> [--business <id>] [--checkpoint <name>]
 aeo audit --business <id> [--mode manual|batch] [--checkpoint <name>]
 aeo audit import <file>
+aeo evidence add --business <id> --checkpoint <label> <file> --note "..." [--from us|client] [--internal]
+aeo evidence list --business <id>
+aeo log --business <id> "what was done" [--finding <CODE>] [--file <path>]
+aeo event --business <id> "what happened"
+aeo timeline --business <id>                everything for a client, in date order, with labels
+aeo compare --business <id> <label> <label>
 aeo truth draft --business <id>             questionnaire for the client, pre-filled from the diagnosis
 aeo truth import --business <id> <file>     confirmed facts + story → new profile version
 aeo questions draft --business <id>         AI-drafted candidate questions to pick from
@@ -603,6 +653,9 @@ The `source:` field is optional on every question in the set; it answers "why th
 ### Making the tool readable to other AI tools
 `aeo export --business <id>` writes one markdown file: a short header saying what each part is, then the latest diagnosis, the raw page, the audit answers and the scores. Drop it into Claude and ask "what should we fix first?" or "draft the client email." An MCP connector (Claude querying the database directly) is deferred until there are several clients.
 
+### AEO Studio Coach (v4.7, later — step 26)
+A Claude skill, plus one Claude Project per client, that Daivik and Anikait use alongside the tool: it knows every command, AEO/GEO in depth, the fixed process and its manual checks, a fix playbook per platform and per host/CDN, how to talk to clients, and AEO Studio's programs (what work belongs in which). After each step we give it the diagnosis, audit or evidence. Its files live in the repo under `coach/`; **whenever a command is added or changed, `coach/tool_guide.md` is updated in the same step** so it never goes stale.
+
 ### Who ran what
 Every journal entry records the person, not the script: `AEO_OPERATOR=daivik` (or `anikait`) in each person's `.env`.
 
@@ -638,5 +691,7 @@ Every journal entry records the person, not the script: `AEO_OPERATOR=daivik` (o
 - **29 Sep 2026 — v3.2.** Reason required for `declined`/`rejected`, recorded as a journal note linked to the status change. `aeo status --reason`. Gate declines journal the reason.
 
 - **10 Oct 2026 — v4.6.** Step 11 (cost gate) done: refuses with no person at the keyboard, no override flag (§3.2). Build order split into a core path (13 truth document → 15 audit report → 19 recommend) and everything else after. Question sets written by hand for now.
+
+- **14 Oct 2026 — v4.7.** Storage rewritten (§10): the database is the record; files are **evidence** (kept forever) or **generated** (rebuildable), in `clients/<domain>/evidence|generated`, date-named, no stage folders. Checkpoints become four fixed labels for every client — `before` · `after_site` · `after_aeo` · `check`; O'land's `old_site` → `before`, `new_site_no_aeo` → `after_site`. Engagement types A–F and access level added (§2). Evidence records with eight fields and a client-visible flag; `aeo log`, `aeo event`, `aeo timeline`. Core path now: **13c storage/evidence/work log (first, so everything after writes into the new layout)** → truth document → audit report → recommend → **compare (moved up)** → **client report (new)**. Later: explain budget, `aeo next` + checklist, CDN detection + migration redirect check, AEO Studio Coach.
 
 *Changes to this plan are deliberate and dated.*
