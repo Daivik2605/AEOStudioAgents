@@ -18,3 +18,6 @@ MASTER_PROMPT.md
 # Personal Claude Code settings (machine-specific)
 .claude/settings.local.json
 reports/
+
+# Client data never goes into git (PLAN.md section 10). reports/ is the old layout, kept until deleted by hand.
+clients/

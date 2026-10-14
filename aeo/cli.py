@@ -1,9 +1,10 @@
-"""The `aeo` command: `diagnose`, `add` and `audit` so far."""
+"""The `aeo` command: `diagnose`, `add`, `audit`, and the client-file commands (engagement, evidence, log, event, timeline, files)."""
 
 from __future__ import annotations
 
 import sys
 import textwrap
+from pathlib import Path
 from typing import Optional
 
 import typer
@@ -12,7 +13,12 @@ from audit.cost_gate import CostGateAborted
 from audit.fill_in import ImportRefused, generate_fill_in, import_fill_in
 from audit.manual import AuditError, run_manual_audit
 from audit.summary import summary_lines
-from core.businesses import BusinessError, add_with_checks
+from core import client_files, evidence as ev, files_migrate, timeline as tl
+from core.businesses import (ACCESS_LEVELS, ENGAGEMENT_TYPES, BusinessError, add_with_checks, get_engagement,
+                             resolve_business, set_engagement)
+from core.checkpoints import CHECKPOINTS, CheckpointError
+from core.db import get_connection
+from core.operator import operator_name
 from diagnose import platform_data as pd
 from diagnose.report import decline_pitch_outline
 from diagnose.run import DiagnoseError, run_diagnosis
@@ -21,6 +27,28 @@ TERMINAL_WIDTH = 100   # findings are wrapped to fit a normal terminal
 
 app = typer.Typer(add_completion=False, no_args_is_help=True,
                   help="AEO Studio tools. Git, sending and deploying are always done by a person.")
+
+
+def _fail(message: str) -> None:
+    typer.secho(f"Error: {message}", fg=typer.colors.RED, err=True)
+    raise typer.Exit(1)
+
+
+def _find_business(ref: str) -> dict:
+    """--business takes an id, a domain or a name. Stops with a plain message if it is none or several."""
+    try:
+        conn = get_connection()
+    except Exception as exc:  # noqa: BLE001 - say plainly that the database is the problem
+        _fail(f"could not reach the database: {exc}")
+    try:
+        return resolve_business(conn, ref)
+    except BusinessError as exc:
+        _fail(str(exc))
+    finally:
+        conn.close()
+
+
+CHECKPOINT_HELP = "One of: " + ", ".join(CHECKPOINTS) + "."
 
 
 @app.callback()
@@ -33,13 +61,14 @@ def main() -> None:
 @app.command()
 def diagnose(
     url: str = typer.Argument(..., help="The site to check, e.g. https://example.com"),
-    business: Optional[str] = typer.Option(None, "--business", help="Business id. Links the result to it and adds a model-written summary."),
-    checkpoint: Optional[str] = typer.Option(None, "--checkpoint", help="Free text, e.g. old_site or new_site_no_aeo."),
+    business: Optional[str] = typer.Option(None, "--business", help="Business id, domain or name. Links the result to it and adds a model-written summary."),
+    checkpoint: Optional[str] = typer.Option(None, "--checkpoint", help=CHECKPOINT_HELP),
 ) -> None:
     """Free, code-only check of whether a site can be helped: serve, conditional or decline."""
+    business_id = _find_business(business)["id"] if business else None
     typer.echo(f"Checking {url} (about 8 requests, one per second)...")
     try:
-        out = run_diagnosis(url, business_id=business, checkpoint=checkpoint)
+        out = run_diagnosis(url, business_id=business_id, checkpoint=checkpoint)
     except DiagnoseError as exc:
         typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
@@ -85,7 +114,7 @@ def diagnose(
         else:
             typer.echo("No business was given, so no status was changed.")
 
-    typer.echo(f"\nReport (run {out.run_number}): {out.report_dir}/diagnosis.md")
+    typer.echo(f"\nReport (run {out.run_number}): {out.report_path}")
 
 
 def _is_interactive() -> bool:
@@ -123,11 +152,6 @@ audit_app = typer.Typer(invoke_without_command=True, add_completion=False,
 app.add_typer(audit_app, name="audit")
 
 
-def _fail(message: str) -> None:
-    typer.secho(f"Error: {message}", fg=typer.colors.RED, err=True)
-    raise typer.Exit(1)
-
-
 def _print_run_numbers(counts: dict, summary: dict, derive, run_id: str) -> None:
     """The short plain-English numbers shared by the terminal and fill-in routes."""
     typer.echo(f"Answers collected: {counts['answers']}")
@@ -147,10 +171,10 @@ def _print_run_numbers(counts: dict, summary: dict, derive, run_id: str) -> None
 @audit_app.callback()
 def audit(
     ctx: typer.Context,
-    business: Optional[str] = typer.Option(None, "--business", help="Business id."),
+    business: Optional[str] = typer.Option(None, "--business", help="Business id, domain or name."),
     question_set: Optional[str] = typer.Option(None, "--question-set", help="Path to the frozen question set, e.g. question_sets/oland-stations_v1.yaml"),
     mode: str = typer.Option("manual", "--mode", help="manual (default). batch is not built yet."),
-    checkpoint: Optional[str] = typer.Option(None, "--checkpoint", help="Free text, e.g. old_site or new_site_no_aeo."),
+    checkpoint: Optional[str] = typer.Option(None, "--checkpoint", help=CHECKPOINT_HELP),
     fill_in: bool = typer.Option(False, "--fill-in", help="Write a fill-in file to complete in an editor, then load it with `aeo audit import <file>`."),
     repeats: Optional[int] = typer.Option(None, "--repeats", help="With --fill-in: how many times each question is asked on each engine (default 1)."),
 ) -> None:
@@ -166,6 +190,7 @@ def audit(
         _fail("--business and --question-set are both required.")
     if repeats is not None and not fill_in:
         _fail("--repeats only works together with --fill-in.")
+    business = _find_business(business)["id"]
 
     if fill_in:
         try:
@@ -214,6 +239,11 @@ def import_answers(
     except AuditError as exc:
         _fail(str(exc))
 
+    if res.evidence_copy:
+        typer.echo(f"A copy of the filled sheet is kept in: {res.evidence_copy}")
+    if res.evidence_copy_error:
+        typer.secho(f"Warning: the answers are saved, but the copy into evidence/ failed: {res.evidence_copy_error}",
+                    fg=typer.colors.YELLOW, err=True)
     typer.echo(f"Saved {res.saved} new answer(s). {res.already_saved} block(s) were already saved earlier and were skipped.")
     if res.unfinished:
         typer.secho(f"{len(res.unfinished)} thing(s) still to fill in (those blocks were not saved):", fg=typer.colors.YELLOW)
@@ -226,3 +256,203 @@ def import_answers(
         typer.secho(f"Audit not complete yet: {res.saved_total} of {res.expected_total} answers saved. "
                     "Fill in the rest and import the same file again.", fg=typer.colors.YELLOW, bold=True)
     _print_run_numbers(res.counts, res.summary, res.derive, res.probe_run_id)
+
+
+# ---- engagement, evidence, work log, events, timeline (PLAN.md sections 2 and 10) -------------------------
+
+@app.command()
+def engagement(
+    business: str = typer.Option(..., "--business", help="Business id, domain or name."),
+    engagement_type: Optional[str] = typer.Option(None, "--type", help="One of: " + ", ".join(ENGAGEMENT_TYPES) + "."),
+    access: Optional[str] = typer.Option(None, "--access", help="One of: " + ", ".join(ACCESS_LEVELS) + "."),
+) -> None:
+    """Record what we were hired for and how much access we have. With neither option, shows the current values."""
+    b = _find_business(business)
+    conn = get_connection()
+    try:
+        if engagement_type is None and access is None:
+            current = get_engagement(conn, b["id"])
+            typer.echo(f"{b['name'] or b['domain']}: type {current['engagement_type'] or 'not set'}, "
+                       f"access {current['access_level'] or 'not set'}")
+            return
+        try:
+            result = set_engagement(conn, b["id"], engagement_type=engagement_type, access_level=access,
+                                    actor=operator_name())
+        except BusinessError as exc:
+            _fail(str(exc))
+    finally:
+        conn.close()
+    typer.echo(f"{b['name'] or b['domain']}: type {result['engagement_type'] or 'not set'}, "
+               f"access {result['access_level'] or 'not set'}"
+               + ("" if result["changed"] else "  (already like this; nothing changed)"))
+
+
+evidence_app = typer.Typer(add_completion=False, no_args_is_help=True,
+                           help="Files that came in from outside: reports, screenshots, emails.")
+app.add_typer(evidence_app, name="evidence")
+
+
+@evidence_app.command("add")
+def evidence_add(
+    file: Path = typer.Argument(..., help="The file to keep. It is copied; the original is left where it is."),
+    business: str = typer.Option(..., "--business", help="Business id, domain or name."),
+    checkpoint: Optional[str] = typer.Option(None, "--checkpoint", help=CHECKPOINT_HELP + " Required."),
+    note: str = typer.Option(..., "--note", help="What we understood from it."),
+    evidence_type: Optional[str] = typer.Option(None, "--type", help="e.g. cdn_report, ai_answer_screenshot, client_email."),
+    source: Optional[str] = typer.Option(None, "--from", help="us or client."),
+    captured: Optional[str] = typer.Option(None, "--captured", help="Date it was captured, YYYY-MM-DD."),
+    period_start: Optional[str] = typer.Option(None, "--period-start", help="First day the evidence covers, YYYY-MM-DD."),
+    period_end: Optional[str] = typer.Option(None, "--period-end", help="Last day the evidence covers, YYYY-MM-DD."),
+    finding: Optional[str] = typer.Option(None, "--finding", help="A finding code it relates to, e.g. RENDER_H1_MISSING."),
+    internal: bool = typer.Option(False, "--internal", help="Never shown to the client."),
+) -> None:
+    """Copy a file into the client's evidence/ folder and record it."""
+    b = _find_business(business)
+    conn = get_connection()
+    try:
+        added = ev.add_evidence(conn, business=b, checkpoint=checkpoint, file=file, note=note,
+                                evidence_type=evidence_type, source=source, captured=captured,
+                                period_start=period_start, period_end=period_end, finding=finding,
+                                internal=internal, operator=operator_name())
+    except (CheckpointError, ev.EvidenceError) as exc:
+        _fail(str(exc))
+    finally:
+        conn.close()
+    typer.echo(f"Kept: {added['stored_at']}")
+    typer.echo(f"Evidence id: {added['id']}" + ("  (internal: not shown to the client)" if internal else ""))
+
+
+@evidence_app.command("list")
+def evidence_list(
+    business: str = typer.Option(..., "--business", help="Business id, domain or name."),
+    checkpoint: Optional[str] = typer.Option(None, "--checkpoint", help="Only this checkpoint. " + CHECKPOINT_HELP),
+) -> None:
+    """Show the evidence records for a business."""
+    b = _find_business(business)
+    conn = get_connection()
+    try:
+        rows = ev.list_evidence(conn, b["id"], checkpoint)
+    except CheckpointError as exc:
+        _fail(str(exc))
+    finally:
+        conn.close()
+    if not rows:
+        typer.echo("No evidence recorded.")
+        return
+    for r in rows:
+        bits = [r["checkpoint"], r["evidence_type"] or "no type", f"from {r['source']}" if r["source"] else "source not stated",
+                f"captured {r['captured_on']}" if r["captured_on"] else "capture date not stated",
+                f"covers {r['period_start']} to {r['period_end']}" if r["period_start"] else None,
+                f"finding {r['finding_code']}" if r["finding_code"] else None,
+                "client can see" if r["client_visible"] else "INTERNAL",
+                f"added by {r['operator']} on {r['created_at']:%Y-%m-%d}"]
+        typer.echo(f"{r['file_path']}")
+        typer.echo("  " + "; ".join(x for x in bits if x))
+        if r["note"]:
+            typer.echo(f"  {r['note']}")
+
+
+@app.command("log")
+def log_work(
+    text: str = typer.Argument(..., help="What was done, in plain words."),
+    business: str = typer.Option(..., "--business", help="Business id, domain or name."),
+    finding: Optional[str] = typer.Option(None, "--finding", help="The finding code this work closes."),
+    checkpoint: Optional[str] = typer.Option(None, "--checkpoint", help=CHECKPOINT_HELP),
+    file: Optional[Path] = typer.Option(None, "--file", help="A file to keep as evidence (needs --checkpoint)."),
+) -> None:
+    """Record a piece of work done for the client."""
+    b = _find_business(business)
+    conn = get_connection()
+    try:
+        added = ev.add_work(conn, business=b, text=text, operator=operator_name(), finding=finding,
+                            checkpoint=checkpoint, file=file)
+    except (CheckpointError, ev.EvidenceError) as exc:
+        _fail(str(exc))
+    finally:
+        conn.close()
+    typer.echo(f"Work recorded for {b['name'] or b['domain']}.")
+    if added["evidence"]:
+        typer.echo(f"File kept as evidence: {added['evidence']['stored_at']}")
+
+
+@app.command("event")
+def log_event(
+    text: str = typer.Argument(..., help="What happened outside our control, in plain words."),
+    business: str = typer.Option(..., "--business", help="Business id, domain or name."),
+) -> None:
+    """Record something that can move the numbers but that we did not do (the client edited their site, an engine changed)."""
+    b = _find_business(business)
+    conn = get_connection()
+    try:
+        ev.add_event(conn, business=b, text=text, operator=operator_name())
+    except ev.EvidenceError as exc:
+        _fail(str(exc))
+    finally:
+        conn.close()
+    typer.echo(f"Event recorded for {b['name'] or b['domain']}.")
+
+
+@app.command("timeline")
+def show_timeline(
+    business: str = typer.Option(..., "--business", help="Business id, domain or name."),
+) -> None:
+    """Everything that happened for this client, oldest first. Also rebuilds timeline.md and work_log.md."""
+    b = _find_business(business)
+    conn = get_connection()
+    try:
+        items, timeline_path, work_path = tl.regenerate(conn, b)
+    finally:
+        conn.close()
+    typer.echo(tl.render_timeline(b, items).rstrip())
+    typer.echo(f"\nWritten: {timeline_path}\n         {work_path}")
+
+
+files_app = typer.Typer(add_completion=False, no_args_is_help=True, help="Move files between layouts.")
+app.add_typer(files_app, name="files")
+
+
+@files_app.command("migrate")
+def files_migrate_cmd(
+    apply: bool = typer.Option(False, "--apply", help="Actually copy. Without it, only the plan is printed."),
+) -> None:
+    """Copy reports/ into the new clients/ layout. Copies only: nothing is deleted or overwritten."""
+    plan = files_migrate.plan_migration(files_migrate.REPORTS_ROOT, client_files.clients_root())
+    project = files_migrate.REPORTS_ROOT.parent
+
+    def show(path):
+        try:
+            return str(path.relative_to(project))
+        except ValueError:
+            return str(path)
+
+    for item in plan.items:
+        if item.action == "copy":
+            typer.echo(f"{show(item.src)}  ->  {show(item.dst)}" + (f"   ({item.note})" if item.note else ""))
+        else:
+            typer.echo(f"{show(item.src)}  ->  (skipped: {item.note})")
+    for note in plan.notes:
+        typer.secho(note, fg=typer.colors.YELLOW)
+
+    conn = get_connection()
+    try:
+        odd = files_migrate.odd_checkpoints(conn)
+    finally:
+        conn.close()
+    if odd:
+        typer.secho("\nThese checkpoint values in the database are not one of "
+                    f"{', '.join(CHECKPOINTS)}. They were left as they are; a person decides what each one should become:",
+                    fg=typer.colors.YELLOW)
+        for table, value, count in odd:
+            typer.echo(f"  {table}: '{value}' ({count} row{'s' if count != 1 else ''})")
+
+    typer.echo("")
+    if not plan.to_copy:
+        typer.echo("Nothing to copy.")
+        return
+    if not apply:
+        typer.echo(f"Dry run: {len(plan.to_copy)} file(s) would be copied. Nothing was changed. "
+                   "Run again with --apply to copy them.")
+        return
+    done = files_migrate.apply_plan(plan)
+    typer.secho(f"Copied {len(done)} file(s).", fg=typer.colors.GREEN)
+    typer.echo("reports/ was not touched. When you are happy with clients/, delete reports/ by hand.")

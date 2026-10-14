@@ -15,7 +15,7 @@ from psycopg.types.json import Jsonb
 
 from core.db import get_connection
 
-# Mirrors the CHECK constraint on client_journal.entry_type (PLAN.md section 9, migration 015).
+# Mirrors the CHECK constraint on client_journal.entry_type (PLAN.md section 9, migrations 015 and 017).
 ENTRY_TYPES = {
     "business_added",
     "status_change",
@@ -35,6 +35,8 @@ ENTRY_TYPES = {
     "error",
     "diagnosed",
     "decline_recommended",
+    "work",
+    "event",
 }
 
 

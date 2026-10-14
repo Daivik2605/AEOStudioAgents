@@ -202,7 +202,7 @@ def test_the_flow_collects_every_field_for_every_question_and_engine(biz, qfile)
         extraction(),
         extraction(("Acme Refill", True, False)),
     ])
-    out = audit(biz, path, op, client, checkpoint="old_site")
+    out = audit(biz, path, op, client, checkpoint="before")
 
     # The operator was shown the exact question and the engine, in order.
     shown = "\n".join(op.said)
@@ -222,7 +222,7 @@ def test_the_flow_collects_every_field_for_every_question_and_engine(biz, qfile)
 
     run = query("SELECT run_type, mode, status, checkpoint, completed_at IS NOT NULL, gate_check_id "
                 "FROM probe_runs WHERE id = %s", (out.probe_run_id,))[0]
-    assert run == ("visibility", "manual", "complete", "old_site", True, None)
+    assert run == ("visibility", "manual", "complete", "before", True, None)
     types = [r[0] for r in query("SELECT entry_type FROM client_journal WHERE business_id = %s "
                                  "AND entry_type IN ('probe_started','probe_completed')", (biz["id"],))]
     assert sorted(types) == ["probe_completed", "probe_started"]
@@ -381,7 +381,7 @@ def test_batch_mode_says_it_is_not_built_yet(biz, qfile):
 def test_audit_for_an_unknown_business_is_refused(qfile):
     result = CliRunner().invoke(app, ["audit", "--business", str(uuid.uuid4()), "--question-set", str(qfile())],
                                 input="y\n")
-    assert result.exit_code == 1 and "no business with id" in result.output
+    assert result.exit_code == 1 and "no business matches" in result.output
 
 
 def test_cli_end_to_end_prints_the_short_summary(biz, qfile, monkeypatch):
@@ -389,14 +389,14 @@ def test_cli_end_to_end_prints_the_short_summary(biz, qfile, monkeypatch):
     monkeypatch.setattr("core.llm.anthropic.Anthropic", lambda: fake)
     typed = "\n".join(["yes", "y", ""] + answer("a1") + answer("a2")) + "\n"
     result = CliRunner().invoke(app, ["audit", "--business", biz["id"], "--question-set",
-                                      str(qfile(questions=(Q1,))), "--checkpoint", "old_site"], input=typed)
+                                      str(qfile(questions=(Q1,))), "--checkpoint", "before"], input=typed)
     assert result.exit_code == 0, result.output
     assert "Audit complete." in result.output
     assert "Answers collected: 2" in result.output
     assert "Answers that named the business: 1" in result.output
     assert "Answers that recommended the business: 1" in result.output
     run_id = result.output.split("Run id: ")[1].strip()
-    assert query("SELECT checkpoint, status FROM probe_runs WHERE id = %s", (run_id,))[0] == ("old_site", "complete")
+    assert query("SELECT checkpoint, status FROM probe_runs WHERE id = %s", (run_id,))[0] == ("before", "complete")
 
 
 # ---- intent / is_target in the question set -----------------------------------

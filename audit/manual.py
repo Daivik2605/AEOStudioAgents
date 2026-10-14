@@ -17,6 +17,7 @@ from audit.summary import build_summary
 from audit.cost_gate import confirm_cost
 from audit.derive import EXTRACT, DeriveReport, derive_run
 from audit.question_set import QuestionSetError, check_not_edited, load_question_set
+from core.checkpoints import CheckpointError, check_checkpoint
 from core.db import get_connection
 from core.journal import write_journal
 
@@ -50,6 +51,10 @@ class _Stop(Exception):
 def run_manual_audit(business_id: str, question_set_path: str, *, checkpoint: str | None,
                      ask: Callable[[str], str], say: Callable[[str], None], client=None) -> AuditOutcome:
     """`ask(prompt)` returns one typed line (raises EOFError at end of input); `say(text)` prints."""
+    try:
+        check_checkpoint(checkpoint)
+    except CheckpointError as exc:
+        raise AuditError(str(exc)) from exc
     try:
         qs = load_question_set(question_set_path)
     except QuestionSetError as exc:

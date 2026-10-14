@@ -5,7 +5,7 @@
   4. check the render              5. read existing structured data
   6. apply the decision rules      7. write findings
   8. (AI) explain the verdict, only if a business is given
-  9. write the report: files always, database rows when the database is reachable
+  9. write the report: files always (clients/<domain>/), database rows when the database is reachable
  10. on a decline, record it and stop
 
 Nothing here sends, publishes or deploys anything.
@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from core.checkpoints import CheckpointError, check_checkpoint
 from core.db import get_connection
 from diagnose import explain, platform_data as pd, report, store
 from diagnose.crawler import BROWSER_UA, challenge_reason, run_crawler_test
@@ -43,7 +44,8 @@ class DiagnosisOutcome:
     verdict: Verdict
     findings: list[dict]
     readiness: float | None
-    report_dir: Path
+    report_dir: Path                      # clients/<domain>/generated
+    report_path: Path                     # the .md report inside it
     data: dict
     diagnosis_id: str | None = None
     ai_explanation: str | None = None
@@ -68,12 +70,16 @@ def run_diagnosis(
     business_id: str | None = None,
     checkpoint: str | None = None,
     fetcher: Fetcher | None = None,
-    reports_root: Path = report.REPORTS_ROOT,
+    clients_root: Path | None = None,     # where clients/ is; only tests change it
     explain_client=None,
     use_ai: bool = True,
     now: datetime | None = None,
 ) -> DiagnosisOutcome:
     url = normalise_url(url)
+    try:
+        check_checkpoint(checkpoint)          # before any request is made
+    except CheckpointError as exc:
+        raise DiagnoseError(str(exc)) from exc
     warnings: list[str] = []
 
     # A business needs the database (to check it exists and to log the work).
@@ -90,14 +96,14 @@ def run_diagnosis(
             raise DiagnoseError(f"no business with id {business_id}")
 
     try:
-        return _run(url, business, conn, checkpoint, fetcher or Fetcher(), reports_root,
+        return _run(url, business, conn, checkpoint, fetcher or Fetcher(), clients_root,
                     explain_client, use_ai, now or datetime.now(timezone.utc), warnings)
     finally:
         if conn is not None:
             conn.close()
 
 
-def _run(url, business, conn, checkpoint, fetcher, reports_root, explain_client, use_ai, now, warnings):
+def _run(url, business, conn, checkpoint, fetcher, clients_root, explain_client, use_ai, now, warnings):
     # 1-2. Crawler test (its browser fetch doubles as the page we analyse).
     crawler = run_crawler_test(fetcher, url)
     page = crawler.control
@@ -184,9 +190,9 @@ def _run(url, business, conn, checkpoint, fetcher, reports_root, explain_client,
 
     data["diagnosis_id"] = diagnosis_id
     # The exact bytes of the no-JavaScript control fetch: the same page the render check and
-    # structured-data extraction just read.
-    folder, run_number = report.write_report(data=data, slug=slug, checkpoint=checkpoint, day=now.date(),
-                                             raw_page=page.body or None, root=reports_root)
+    # structured-data extraction just read. It goes to evidence/ (it came in); the report to generated/.
+    folder, run_number, report_path = report.write_report(data=data, slug=slug, day=now.date(),
+                                                          raw_page=page.body or None, root=clients_root)
 
     if db_error is not None:
         if business:
@@ -194,7 +200,8 @@ def _run(url, business, conn, checkpoint, fetcher, reports_root, explain_client,
         warnings.append(f"Database not reachable ({db_error}); the report was written to files only.")
 
     return DiagnosisOutcome(facts=facts, verdict=verdict, findings=findings, readiness=readiness,
-                            report_dir=folder, data=data, diagnosis_id=diagnosis_id,
+                            report_dir=folder, report_path=report_path, data=data,
+                            diagnosis_id=diagnosis_id,
                             ai_explanation=ai_text, decline_result=decline_result, warnings=warnings,
                             run_number=run_number)
 

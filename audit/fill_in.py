@@ -28,13 +28,13 @@ from audit.manual import ACTOR, ENGINES, AuditError
 from audit.question_set import QuestionSet, QuestionSetError, check_not_edited, load_question_set
 from audit.sources import merge_sources, parse_link
 from audit.summary import build_summary
+from core import client_files
+from core.checkpoints import CheckpointError, check_checkpoint
 from core.db import get_connection
 from core.journal import write_journal
-from core.report_files import numbered_name, write_run_files
-from diagnose.report import REPORTS_ROOT, safe_checkpoint, slugify_domain
 
 SHEET_MAGIC = "AEO FILL-IN SHEET v1"
-SHEET_ANCHOR = "audit_fill_in.md"       # numbered as audit_fill_in_run<N>_<date>.md
+SHEET_KIND = "audit_fill_in"          # written as <date>_audit_fill_in_run<N>.md in generated/
 
 ENGINE_LABELS = {"chatgpt": "ChatGPT", "perplexity": "Perplexity"}
 
@@ -121,9 +121,13 @@ class GenerateResult:
 
 
 def generate_fill_in(business_id: str, question_set_path: str, *, checkpoint: str | None, repeats: int = 1,
-                     reports_root: Path | None = None, today: date | None = None) -> GenerateResult:
+                     clients_root: Path | None = None, today: date | None = None) -> GenerateResult:
     if repeats < 1:
         raise AuditError("--repeats must be 1 or more")
+    try:
+        check_checkpoint(checkpoint)
+    except CheckpointError as exc:
+        raise AuditError(str(exc)) from exc
     try:
         qs = load_question_set(question_set_path)
     except QuestionSetError as exc:
@@ -145,18 +149,18 @@ def generate_fill_in(business_id: str, question_set_path: str, *, checkpoint: st
         run_id = store.start_run(conn, business=business, qs=qs, checkpoint=checkpoint, engines=ENGINES,
                                  answers_expected=total, how="fill_in_file", extra={"repeats": repeats})
         day = today or date.today()
-        folder = (reports_root or REPORTS_ROOT) / slugify_domain(business["domain"]) / safe_checkpoint(checkpoint)
+        folder = client_files.generated_dir(business["domain"], clients_root)
         text = render_sheet(business=business, qs=qs, qs_path=str(question_set_path), checkpoint=checkpoint,
                             day=day, run_id=run_id, repeats=repeats)
         try:
-            number = write_run_files(folder, {SHEET_ANCHOR: text}, anchor=SHEET_ANCHOR, day=day, keep_latest=False)
+            _, paths = client_files.write_generated(folder, kind=SHEET_KIND, files={"md": text}, anchor_ext="md", day=day)
         except OSError as exc:
             store.finish_run(conn, run_id, complete=False)    # do not leave a run open that has no sheet
             raise AuditError(f"could not write the fill-in file ({exc}); the run was marked failed") from exc
     finally:
         conn.close()
 
-    return GenerateResult(path=folder / numbered_name(SHEET_ANCHOR, number, day), probe_run_id=str(run_id),
+    return GenerateResult(path=paths["md"], probe_run_id=str(run_id),
                           blocks=total, warnings=qs.target_warnings())
 
 
@@ -294,10 +298,13 @@ class ImportResult:
     counts: dict
     summary: dict
     derive: DeriveReport
+    evidence_copy: Path | None = None   # the filled sheet, copied into the client's evidence/ folder
+    evidence_copy_error: str | None = None
 
 
 def import_fill_in(path: str | Path, *, partial: bool = False, question_set_path: str | None = None,
-                   client=None, ask=input, say=print) -> ImportResult:
+                   client=None, ask=input, say=print, clients_root: Path | None = None,
+                   today: date | None = None) -> ImportResult:
     path = Path(path)
     if not path.is_file():
         raise AuditError(f"fill-in file not found: {path}")
@@ -394,6 +401,18 @@ def import_fill_in(path: str | Path, *, partial: bool = False, question_set_path
                     sources_cited=sources, repeat_number=expected[b.id][2])
                 new_ids.append(row_id)
 
+        # The filled sheet is something that came IN, so a copy is kept in evidence/ (the original is left
+        # where it is). Only when this import saved something new: a re-import of a finished file adds nothing.
+        evidence_copy = evidence_copy_error = None
+        if new_ids:
+            stem = re.sub(r"^\d{4}-\d{2}-\d{2}_", "", path.stem)
+            try:
+                evidence_copy = client_files.copy_new(
+                    path, client_files.evidence_dir(business["domain"], clients_root),
+                    f"{(today or date.today()).isoformat()}_{client_files.safe_name(stem)}_filled{path.suffix}")
+            except OSError as exc:        # the answers are already saved; do not fail the import over a copy
+                evidence_copy_error = str(exc)
+
         saved_now = store.saved_triples(conn, run_id)
         total_saved = len(saved_now)
         complete = set(expected.values()) <= saved_now      # every question x engine x repeat has its answer
@@ -414,7 +433,8 @@ def import_fill_in(path: str | Path, *, partial: bool = False, question_set_path
 
     return ImportResult(probe_run_id=run_id, saved=len(new_ids), already_saved=already, unfinished=problems,
                         saved_total=total_saved, expected_total=len(expected), complete=complete,
-                        counts=counts, summary=summary, derive=derived)
+                        counts=counts, summary=summary, derive=derived,
+                        evidence_copy=evidence_copy, evidence_copy_error=evidence_copy_error)
 
 
 def _fatal_problems(sheet: Sheet, expected: dict, qs: QuestionSet) -> list[str]:

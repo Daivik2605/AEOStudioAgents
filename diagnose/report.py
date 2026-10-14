@@ -1,28 +1,25 @@
-"""Writes the diagnosis report: diagnosis.md and diagnosis.json under
-reports/<business-slug>/<checkpoint>/ (PLAN.md section 10).
+"""Writes the diagnosis report (PLAN.md section 10):
 
-Reports are kept forever: every run is written as a numbered, dated copy
-(diagnosis_run2_2026-10-05.md), plus an overwritten "latest" copy with no number.
-See core/report_files.py.
+    clients/<domain>/generated/<date>_diagnosis_run<N>.md and .json     the report (tool output)
+    clients/<domain>/evidence/<date>_raw_page_run<N>.html               the page as fetched (came in, kept forever)
+
+Every run gets its own numbered, dated files. There is no "latest" copy. See core/client_files.py.
 """
 
 from __future__ import annotations
 
 import json
-import re
 from datetime import date
 from pathlib import Path
-from urllib.parse import urlsplit
 
-from core.report_files import write_run_files
+from core import client_files
+from core.client_files import slugify_domain  # noqa: F401 - re-exported: callers import it from here
 from diagnose import RULES_VERSION
 from diagnose import platform_data as pd
 from diagnose.codes import SEVERITIES
 from diagnose.crawler import BOTS
 from diagnose.facts import Facts
 from diagnose.rules import Verdict
-
-REPORTS_ROOT = Path(__file__).parent.parent / "reports"
 
 # What this check can and cannot tell you. Printed in every report.
 LIMITS = [
@@ -34,19 +31,6 @@ LIMITS = [
     "A plan tier (for example Squarespace Basic vs Core) usually cannot be seen from outside. Where we could "
     "not see it, the report says so instead of guessing.",
 ]
-
-
-def slugify_domain(value: str) -> str:
-    """'https://www.Example.com/x' -> 'example.com'"""
-    host = urlsplit(value if "//" in value else f"//{value}").hostname or value
-    host = host.lower().removeprefix("www.")
-    return re.sub(r"[^a-z0-9.-]+", "-", host).strip("-.") or "unknown-site"
-
-
-def safe_checkpoint(checkpoint: str | None) -> str:
-    """A folder name from free text. Slashes and dots-only names can never escape reports/."""
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", (checkpoint or "").strip()).strip("-.")
-    return cleaned or "unspecified"
 
 
 def decline_pitch_outline(label: str, reason: str) -> list[str]:
@@ -203,15 +187,17 @@ def build_markdown(data: dict) -> str:
     return "\n".join(lines)
 
 
-def write_report(*, data: dict, slug: str, checkpoint: str | None, day: date, raw_page: bytes | None = None,
-                 root: Path = REPORTS_ROOT) -> tuple[Path, int]:
-    """Writes diagnosis.md, diagnosis.json and (if there was a page) raw_page.html, numbered and as latest.
-    Returns (folder, run number)."""
-    folder = root / slug / safe_checkpoint(checkpoint)
-    files: dict[str, str | bytes] = {
-        "diagnosis.md": build_markdown(data),
-        "diagnosis.json": json.dumps(data, indent=2, ensure_ascii=False),
-    }
+def write_report(*, data: dict, slug: str, day: date, raw_page: bytes | None = None,
+                 root: Path | None = None) -> tuple[Path, int, Path]:
+    """Writes the report (md + json) to generated/ and, if there was a page, raw_page to evidence/.
+    Returns (generated folder, run number, path of the .md report).
+
+    The raw page takes the same run number as the report, so the two can be matched by eye."""
+    generated = client_files.generated_dir(slug, root)
+    run, paths = client_files.write_generated(
+        generated, kind="diagnosis", anchor_ext="md", day=day,
+        files={"md": build_markdown(data), "json": json.dumps(data, indent=2, ensure_ascii=False)})
     if raw_page:
-        files["raw_page.html"] = raw_page
-    return folder, write_run_files(folder, files, anchor="diagnosis.md", day=day)
+        client_files.write_new(client_files.evidence_dir(slug, root),
+                               client_files.dated_name(day, "raw_page", "html", run), raw_page)
+    return generated, run, paths["md"]

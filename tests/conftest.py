@@ -148,3 +148,15 @@ def _pretend_a_terminal(monkeypatch):
     that check the no-terminal refusal switch it back off (`no_tty`)."""
     monkeypatch.setattr("audit.cost_gate.stdin_is_tty", lambda: True)
     monkeypatch.setattr("sys.stdin", io.StringIO("yes\n" * 50))
+
+
+# ---- client files must never land in the real clients/ folder ----------------------------------
+
+@pytest.fixture(autouse=True)
+def _clients_folder_in_tmp(tmp_path_factory, monkeypatch):
+    """Anything that writes client files without being told where (an import, a CLI command) would
+    otherwise create folders in the real clients/. Point it at a throwaway folder for every test."""
+    from core import client_files
+    root = tmp_path_factory.mktemp("clients")
+    monkeypatch.setattr(client_files, "CLIENTS_ROOT", root)
+    return root

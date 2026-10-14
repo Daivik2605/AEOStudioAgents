@@ -538,8 +538,8 @@ Now: Postgres in Docker on Daivik's Mac, files in `clients/` on the Mac. With th
 | 10 | **Fill-in file** + `aeo audit import` | ✅ Done (`--partial`, resumable) |
 | 11 | **Cost gate** on audit's AI calls | ✅ Done. Refuses with no person at the keyboard; no override flag (§3.2) |
 | | **Core path — build these first (decided 10 Oct 2026)** | |
-| 13c | **Storage layout + engagement + evidence + work log** (§10, §2): `clients/<domain>/evidence\|generated`, fixed checkpoint labels, move O'land's files across, engagement type + access level on the business, `aeo evidence add/list`, `aeo log`, `aeo event`, `aeo timeline` | ⏭ Next — before 13, so the truth document is written into the new layout |
-| 13 | **Truth document** — `aeo truth draft` (questionnaire pre-filled from the diagnosis) + `aeo truth import` (confirmed facts + story → new profile version). Replaces the v4.4 "client facts file" | |
+| 13c | **Storage layout + engagement + evidence + work log** (§10, §2): `clients/<domain>/evidence\|generated`, fixed checkpoint labels, move O'land's files across, engagement type + access level on the business, `aeo evidence add/list`, `aeo log`, `aeo event`, `aeo timeline` | ✅ Done (migration 017). Evidence rows only from `aeo evidence add` / `aeo log --file`; raw page, filled sheet and migrated files are files only. `core/report_files.py` now unused |
+| 13 | **Truth document** — `aeo truth draft` (questionnaire pre-filled from the diagnosis) + `aeo truth import` (confirmed facts + story → new profile version). Replaces the v4.4 "client facts file" | ⏭ Next |
 | 15 | Audit report output (scores with ranges, share of voice, reasons, wrong facts) | |
 | 19 | **`aeo recommend`** — includes the draft validator | |
 | 20 | **Compare** — moved up in v4.7. Any two checkpoints: diagnosis findings closed/open/new by code, audit numbers side by side | |

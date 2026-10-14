@@ -18,6 +18,7 @@ from audit import fill_in as fi
 from audit.fill_in import ImportRefused, generate_fill_in, import_fill_in, parse_sheet
 from audit.manual import AuditError
 from conftest import FakeAnthropicClient
+from core import client_files
 from tests.test_audit import biz, extraction, qfile, query  # noqa: F401  (fixtures and helpers)
 
 Q1 = "who supplies water refill stations for events?"
@@ -27,10 +28,10 @@ DAY = date(2026, 10, 7)
 
 # ---- helpers ------------------------------------------------------------------
 
-def generate(biz, qfile, tmp_path, *, questions=(Q1, Q2), repeats=1, checkpoint="old_site", day=DAY):
+def generate(biz, qfile, tmp_path, *, questions=(Q1, Q2), repeats=1, checkpoint="before", day=DAY):
     path = qfile(questions=questions)
     made = generate_fill_in(biz["id"], str(path), checkpoint=checkpoint, repeats=repeats,
-                            reports_root=tmp_path / "reports", today=day)
+                            clients_root=tmp_path / "clients", today=day)
     return path, made
 
 
@@ -87,17 +88,17 @@ def rows_of(run_id):
 
 # ---- generating ---------------------------------------------------------------
 
-def test_the_sheet_is_a_numbered_file_with_no_latest_copy_and_a_run_in_progress(biz, qfile, tmp_path):
+def test_the_sheet_is_a_dated_numbered_file_in_generated_with_a_run_in_progress(biz, qfile, tmp_path):
     path, made = generate(biz, qfile, tmp_path)
-    folder = tmp_path / "reports" / biz["domain"] / "old_site"
-    assert made.path == folder / "audit_fill_in_run1_2026-10-07.md"
-    assert [p.name for p in folder.iterdir()] == ["audit_fill_in_run1_2026-10-07.md"]
+    folder = tmp_path / "clients" / biz["domain"] / "generated"
+    assert made.path == folder / "2026-10-07_audit_fill_in_run1.md"
+    assert [p.name for p in folder.iterdir()] == ["2026-10-07_audit_fill_in_run1.md"]
     _, second = generate(biz, qfile, tmp_path, day=date(2026, 10, 9))
-    assert second.path.name == "audit_fill_in_run2_2026-10-09.md"
+    assert second.path.name == "2026-10-09_audit_fill_in_run2.md"
     assert made.path.exists()                                        # the first sheet is untouched
     run = query("SELECT status, checkpoint, mode, run_type, gate_check_id FROM probe_runs WHERE id = %s",
                 (made.probe_run_id,))[0]
-    assert run == ("in_progress", "old_site", "manual", "visibility", None)
+    assert run == ("in_progress", "before", "manual", "visibility", None)
     assert query("SELECT details->>'repeats', details->>'capture' FROM client_journal "
                  "WHERE entry_type = 'probe_started' AND details->>'probe_run_id' = %s", (made.probe_run_id,))[0] \
         == ("1", "fill_in_file")
@@ -107,7 +108,7 @@ def test_the_header_and_one_block_per_question_engine_and_repeat(biz, qfile, tmp
     path, made = generate(biz, qfile, tmp_path, repeats=3)
     text = made.path.read_text(encoding="utf-8")
     for needle in (fi.SHEET_MAGIC, f"BUSINESS: {biz['name']}", f"BUSINESS ID: {biz['id']}",
-                   f"QUESTION SET: {path.stem}", "CHECKPOINT: old_site", "DATE: 2026-10-07",
+                   f"QUESTION SET: {path.stem}", "CHECKPOINT: before", "DATE: 2026-10-07",
                    f"PROBE RUN: {made.probe_run_id}", "REPEATS: 3", fi.OPERATOR_LABEL, fi.LOGGED_LABEL, fi.LOCATION_LABEL):
         assert needle in text
     sheet = parse_sheet(text)
@@ -130,9 +131,9 @@ def test_a_block_has_exactly_the_layout_in_the_plan():
 
 def test_generate_refuses_bad_input(biz, qfile, tmp_path):
     with pytest.raises(AuditError, match="no business"):
-        generate_fill_in(str(uuid.uuid4()), str(qfile()), checkpoint=None, reports_root=tmp_path)
+        generate_fill_in(str(uuid.uuid4()), str(qfile()), checkpoint=None, clients_root=tmp_path)
     with pytest.raises(AuditError, match="1 or more"):
-        generate_fill_in(biz["id"], str(qfile()), checkpoint=None, repeats=0, reports_root=tmp_path)
+        generate_fill_in(biz["id"], str(qfile()), checkpoint=None, repeats=0, clients_root=tmp_path)
     assert query("SELECT count(*) FROM probe_runs WHERE business_id = %s", (biz["id"],))[0][0] == 0
 
 
@@ -409,12 +410,11 @@ def test_terminal_mode_still_counts_repeats_itself(biz, qfile):
 
 
 def test_cli_generate_then_import_partial_then_import(biz, qfile, tmp_path, monkeypatch):
-    monkeypatch.setattr(fi, "REPORTS_ROOT", tmp_path / "reports")
     path = qfile(questions=(Q1,))
     made = CliRunner().invoke(app, ["audit", "--business", biz["id"], "--question-set", str(path),
-                                    "--fill-in", "--checkpoint", "old_site", "--repeats", "2"])
+                                    "--fill-in", "--checkpoint", "before", "--repeats", "2"])
     assert made.exit_code == 0, made.output
-    sheet = next((tmp_path / "reports").rglob("audit_fill_in_run1_*.md"))
+    sheet = next(client_files.CLIENTS_ROOT.rglob("*_audit_fill_in_run1.md"))
     assert "Fill-in file written (4 blocks)" in made.output and f"aeo audit import {sheet}" in made.output
 
     fake = FakeAnthropicClient([extraction(("Acme Refill", True, True)), extraction(("Rival", False, False)),

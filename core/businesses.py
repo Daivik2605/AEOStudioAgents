@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Callable
+from uuid import UUID
 from urllib.parse import urlsplit
 
 import psycopg
@@ -150,3 +151,94 @@ def add_business(raw_url: str, name: str | None = None) -> dict:
         conn.close()
     return {"id": str(business_id), "domain": domain, "website_url": website_url,
             "name": name, "profile_id": str(profile_id)}
+
+
+# ---- finding a business from whatever the person typed ------------------------------------------
+
+def resolve_business(conn, ref: str) -> dict:
+    """`--business` accepts an id, a domain or a name. Returns {id, name, domain}.
+
+    All three are tried and every business that matches is collected. Exactly one match is the
+    answer; none or several is an error that says what was found, so a wrong business is never
+    picked silently.
+    """
+    ref = (ref or "").strip()
+    if not ref:
+        raise BusinessError("no business given (use an id, a domain or a name)")
+
+    found: dict[str, dict] = {}
+    try:
+        UUID(ref)
+    except ValueError:
+        pass
+    else:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, name, domain FROM businesses WHERE id = %s", (ref,))
+            for r in cur.fetchall():
+                found[str(r[0])] = {"id": str(r[0]), "name": r[1], "domain": r[2]}
+    try:
+        domain, _ = parse_site(ref)
+    except BusinessError:
+        domain = None
+    if domain:
+        match = find_by_domain(conn, domain)
+        if match:
+            found[match["id"]] = match
+    for match in find_by_name(conn, ref):
+        found[match["id"]] = match
+
+    if not found:
+        raise BusinessError(f"no business matches '{ref}' (tried it as an id, a domain and a name)")
+    if len(found) > 1:
+        raise BusinessError(f"'{ref}' matches more than one business: " + "; ".join(_describe(m) for m in found.values())
+                            + ". Use the id of the one you mean.")
+    return next(iter(found.values()))
+
+
+# ---- engagement type and access level (PLAN.md section 2) -----------------------------------------
+
+ENGAGEMENT_TYPES = ("aeo_only", "web_dev_aeo", "web_dev_only", "migration_pitch", "prospect")
+ACCESS_LEVELS = ("none", "cms", "hosting", "full")
+
+
+def set_engagement(conn, business_id: str, *, engagement_type: str | None, access_level: str | None,
+                   actor: str) -> dict:
+    """Sets either or both. Returns {changed, engagement_type, access_level}. A change writes a journal note.
+
+    Setting a value to what it already is changes nothing and writes nothing.
+    """
+    if engagement_type is not None and engagement_type not in ENGAGEMENT_TYPES:
+        raise BusinessError(f"'{engagement_type}' is not an engagement type. Valid: {', '.join(ENGAGEMENT_TYPES)}")
+    if access_level is not None and access_level not in ACCESS_LEVELS:
+        raise BusinessError(f"'{access_level}' is not an access level. Valid: {', '.join(ACCESS_LEVELS)}")
+    if engagement_type is None and access_level is None:
+        raise BusinessError("nothing to set: give --type, --access or both")
+
+    with conn.transaction():
+        with conn.cursor() as cur:
+            cur.execute("SELECT engagement_type, access_level FROM businesses WHERE id = %s FOR UPDATE", (business_id,))
+            row = cur.fetchone()
+            if row is None:
+                raise BusinessError(f"no business with id {business_id}")
+            old_type, old_access = row
+            new_type = old_type if engagement_type is None else engagement_type
+            new_access = old_access if access_level is None else access_level
+            if (new_type, new_access) == (old_type, old_access):
+                return {"changed": False, "engagement_type": new_type, "access_level": new_access}
+            cur.execute("UPDATE businesses SET engagement_type = %s, access_level = %s WHERE id = %s",
+                        (new_type, new_access, business_id))
+        write_journal(
+            business_id=business_id, entry_type="note", actor=actor,
+            description=f"Engagement set: type {new_type or 'not set'} (was {old_type or 'not set'}), "
+                        f"access {new_access or 'not set'} (was {old_access or 'not set'})",
+            related_table="businesses", related_id=business_id, conn=conn,
+            details={"engagement_type": {"from": old_type, "to": new_type},
+                     "access_level": {"from": old_access, "to": new_access}})
+    return {"changed": True, "engagement_type": new_type, "access_level": new_access}
+
+
+def get_engagement(conn, business_id: str) -> dict:
+    with conn.cursor() as cur:
+        cur.execute("SELECT engagement_type, access_level FROM businesses WHERE id = %s", (business_id,))
+        r = cur.fetchone()
+    return {"engagement_type": r[0], "access_level": r[1]}
