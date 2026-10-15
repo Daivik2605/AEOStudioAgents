@@ -540,8 +540,9 @@ Now: Postgres in Docker on Daivik's Mac, files in `clients/` on the Mac. With th
 | | **Core path — build these first (decided 10 Oct 2026)** | |
 | 13c | **Storage layout + engagement + evidence + work log** (§10, §2): `clients/<domain>/evidence\|generated`, fixed checkpoint labels, move O'land's files across, engagement type + access level on the business, `aeo evidence add/list`, `aeo log`, `aeo event`, `aeo timeline` | ✅ Done (migration 017). Evidence rows only from `aeo evidence add` / `aeo log --file`; raw page, filled sheet and migrated files are files only. `core/report_files.py` now unused |
 | 13 | **Truth document** — `aeo truth draft` (questionnaire pre-filled from the diagnosis) + `aeo truth import` (confirmed facts + story → new profile version). Replaces the v4.4 "client facts file" | ✅ Done (migration 018: `facts` + `story` on `business_profiles`, saved versions can't be edited or deleted). Follow-up: map confirmed facts into the columns the diagnose render check reads |
-| 15 | Audit report output (scores with ranges, share of voice, reasons, wrong facts) | ⏭ Next |
-| 19 | **`aeo recommend`** — includes the draft validator | |
+| 15 | Audit report output (scores with ranges, share of voice, reasons, wrong facts) | ✅ Done. No AI; bootstrap ranges resample questions (seed in config.yaml); snapshot shows overall figures only; partial reports never save scores. Not yet seen on a real run |
+| 19 | **`aeo recommend`** — fix files (robots.txt, llms.txt, JSON-LD from confirmed facts only) + the ordered fix list with platform routing from data. No AI | ⏭ Next |
+| 19b | **Draft validator** — `aeo recommend check-draft`: mechanical citability checks + the one AI "distinctive" check behind the cost gate. Split out of 19 in v4.7 | |
 | 20 | **Compare** — moved up in v4.7. Any two checkpoints: diagnosis findings closed/open/new by code, audit numbers side by side | |
 | 22 | **Client report** — one designed HTML file (prints to PDF) per stage: starting point, work done, results, quarterly check. Python builds numbers and tables; AI writes only short summaries; only client-visible evidence; numbered versions; saves the data it used so it can be rebuilt identically | |
 | | **After the core path** | |

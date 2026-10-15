@@ -9,6 +9,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from core.journal import write_journal
+from core.operator import operator_name
 from core.profiles import confirmed_facts
 
 def load_business_and_profile(conn: psycopg.Connection, business_id: str, profile_id: str | None = None) -> dict | None:
@@ -146,6 +147,10 @@ def start_run(conn: psycopg.Connection, *, business: dict, qs, checkpoint: str |
         details={"probe_run_id": str(run_id), "question_set_version": qs.version,
                  "question_set_sha256": qs.fingerprint, "checkpoint": checkpoint, "engines": engines,
                  "profile_id": business["profile_id"], "profile_version": business["profile_version"],
+                 # The tags as they were when the run started, so the report can split targets from control
+                 # without needing the question-set file (which a person may have moved).
+                 "questions": [{"text": q.text, "intent": q.intent, "is_target": q.is_target} for q in qs.items],
+                 "started_by": operator_name(),
                  "answers_expected": answers_expected, "capture": how, **(extra or {})})
     return run_id
 

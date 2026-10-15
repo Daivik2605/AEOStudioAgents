@@ -21,3 +21,15 @@ visibility_tiers:
   - { below: 60, label: "Partially Visible" }
   - { below: 80, label: "Visible" }
   - { below: .inf, label: "Dominant" }
+
+# Stored with every saved score (visibility_scores.formula_version). Change it whenever a formula, a weight
+# or a tier band changes, so an old score is never confused with a new one.
+formula_version: "v1"
+
+# The range around every audit-report score (PLAN.md section 8): a bootstrap that resamples QUESTIONS, not
+# answers, because the repeats of one question are not independent of each other. The seed is fixed so the
+# same data always gives the same range.
+bootstrap:
+  resamples: 2000
+  seed: 20261014
+  level: 0.95

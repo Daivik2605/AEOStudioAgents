@@ -12,11 +12,12 @@ import typer
 from audit.cost_gate import CostGateAborted
 from audit.fill_in import ImportRefused, generate_fill_in, import_fill_in
 from audit.manual import AuditError, run_manual_audit
+from audit.report import ReportError, make_report
 from audit.summary import summary_lines
 from core import client_files, evidence as ev, files_migrate, timeline as tl
 from core.businesses import (ACCESS_LEVELS, ENGAGEMENT_TYPES, BusinessError, add_with_checks, get_engagement,
                              resolve_business, set_engagement)
-from core.checkpoints import CHECKPOINTS, CheckpointError
+from core.checkpoints import CHECKPOINTS, CheckpointError, check_checkpoint
 from core.db import get_connection
 from core.operator import operator_name
 from truth import draft as truth_draft
@@ -258,6 +259,39 @@ def import_answers(
         typer.secho(f"Audit not complete yet: {res.saved_total} of {res.expected_total} answers saved. "
                     "Fill in the rest and import the same file again.", fg=typer.colors.YELLOW, bold=True)
     _print_run_numbers(res.counts, res.summary, res.derive, res.probe_run_id)
+
+
+@audit_app.command("report")
+def audit_report(
+    business: str = typer.Option(..., "--business", help="Business id, domain or name."),
+    run: Optional[str] = typer.Option(None, "--run", help="The probe run id (printed by `aeo audit`)."),
+    checkpoint: Optional[str] = typer.Option(None, "--checkpoint", help="The latest finished run at this checkpoint. " + CHECKPOINT_HELP),
+    partial: bool = typer.Option(False, "--partial", help="Allow an unfinished run. The report carries an INCOMPLETE banner and its scores are not saved."),
+) -> None:
+    """Write the audit report for one run: scores with ranges, share of voice, wrong facts, every answer. No AI, no fix plan."""
+    b = _find_business(business)
+    try:
+        if checkpoint:
+            check_checkpoint(checkpoint)
+        made = make_report(b, run=run, checkpoint=checkpoint, partial=partial)
+    except (CheckpointError, ReportError) as exc:
+        _fail(str(exc))
+    data = made.data
+    hl = data["headline"]["measures"]["visibility"]
+    typer.echo(f"{data['design']['label']} report for run {made.run_id}.")
+    if made.other_runs:
+        typer.echo(f"({made.other_runs} other run(s) match; pass --run <id> to choose a different one.)")
+    if data["incomplete"]:
+        typer.secho(f"INCOMPLETE: {data['incomplete']['answers_saved']} of {data['incomplete']['answers_expected']} answers. "
+                    "The report says so at the top. Its scores were not saved.", fg=typer.colors.YELLOW, bold=True)
+    if data["extraction"]["failed"]:
+        typer.secho(f"{len(data['extraction']['failed'])} answer(s) could not be read by the model and were left out of the scores.",
+                    fg=typer.colors.YELLOW)
+    rng = f" (95% range {hl['low']:.1f}%{chr(8211)}{hl['high']:.1f}%)" if hl["low"] is not None else " (no range: too few questions)"
+    typer.echo(f"Visibility score: {hl['value']:.1f}%{rng}, tier {data['headline']['tier']}.")
+    typer.echo("Scores saved to visibility_scores." if made.scores_saved else "Scores were not saved (unfinished run).")
+    typer.echo(f"Report: {made.md_path}")
+    typer.echo(f"Data:   {made.json_path}")
 
 
 # ---- engagement, evidence, work log, events, timeline (PLAN.md sections 2 and 10) -------------------------

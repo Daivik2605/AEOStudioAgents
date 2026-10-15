@@ -72,6 +72,28 @@ def recognition_rate(recognized_answers: int, total_brand_answers: int) -> float
     return _percentage(recognized_answers, total_brand_answers)
 
 
+def recommendation_rate(recommended_answers: int, total_answers: int) -> float:
+    """Share of answers that PROPOSED the business as the answer, not merely listed it (PLAN.md section 8)."""
+    return _percentage(recommended_answers, total_answers)
+
+
+def brand_free_rate(answers_naming_nobody: int, total_answers: int) -> float:
+    """Share of answers that named no business at all. An answer naming nobody is not the same as one naming
+    a competitor (PLAN.md section 8)."""
+    return _percentage(answers_naming_nobody, total_answers)
+
+
+def retrieval_activation_rate(searched_answers: int, answers_where_known: int) -> float:
+    """Share of answers where the engine actually searched the web. Answers where the operator could not
+    tell are left out of the denominator by the caller."""
+    return _percentage(searched_answers, answers_where_known)
+
+
+def formula_version() -> str:
+    """Stored with every saved score, so an old score is never mistaken for one from different formulas."""
+    return str(_config()["formula_version"])
+
+
 def visibility_tier(score: float) -> str:
     """Classifies a visibility_score (0-100) into one of PLAN.md's five tiers."""
     if not 0 <= score <= 100:
