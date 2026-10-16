@@ -1,0 +1,63 @@
+# schema.org types accepted for a business-type fact in the truth document. LocalBusiness and the subtypes
+# below are real schema.org types. Anything else falls back to LocalBusiness and is reported.
+# Source: https://schema.org/LocalBusiness (subtypes)
+default: LocalBusiness
+types:
+  - LocalBusiness
+  - AccountingService
+  - AutoRepair
+  - Bakery
+  - BarOrPub
+  - BeautySalon
+  - BikeStore
+  - BookStore
+  - CafeOrCoffeeShop
+  - ChildCare
+  - ClothingStore
+  - Dentist
+  - DryCleaningOrLaundry
+  - Electrician
+  - ElectronicsStore
+  - EmergencyService
+  - EntertainmentBusiness
+  - FinancialService
+  - Florist
+  - FoodEstablishment
+  - FurnitureStore
+  - GasStation
+  - GeneralContractor
+  - GolfCourse
+  - HVACBusiness
+  - HairSalon
+  - HardwareStore
+  - HealthAndBeautyBusiness
+  - HomeAndConstructionBusiness
+  - HomeGoodsStore
+  - Hospital
+  - Hotel
+  - HousePainter
+  - InsuranceAgency
+  - JewelryStore
+  - LegalService
+  - Library
+  - LiquorStore
+  - Locksmith
+  - MovingCompany
+  - NailSalon
+  - NightClub
+  - Notary
+  - PetStore
+  - Physician
+  - Plumber
+  - ProfessionalService
+  - RealEstateAgent
+  - Restaurant
+  - RoofingContractor
+  - SelfStorage
+  - ShoppingCenter
+  - SportingGoodsStore
+  - Store
+  - TattooParlor
+  - TravelAgency
+  - VeterinaryCare
+  - Winery

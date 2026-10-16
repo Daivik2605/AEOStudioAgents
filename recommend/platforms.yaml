@@ -1,0 +1,108 @@
+# Where each fix goes on each platform, and what cannot be done there.
+# Source: research/PLATFORM_DELIVERY.md §1 (capability matrix), §2 (hard gates), §3 (silent killers), §4 (automation).
+# This is DATA. Nothing here is read by a model; recommend/routing.py looks it up.
+#
+# level:  can     = works on every plan
+#         gated   = works only on a higher plan or with a plugin (the text says which)
+#         cannot  = impossible on this platform. `alternative` says what to do instead.
+# `blocked_plans` (optional): plan names, as `aeo diagnose` reports them, on which the item is impossible until
+#         the client upgrades.
+# `by_hand` (optional): true when the platform has no way for us to script it, so a person types it in.
+
+source: "research/PLATFORM_DELIVERY.md §1"
+
+platforms:
+  shopify:
+    label: Shopify
+    robots: {level: can, where: "Edit robots.txt.liquid in the theme (Online Store → Themes → Edit code).", by_hand: false}
+    llms:   {level: can, where: "Shopify serves /llms.txt itself. Override it with a template in the theme if you want our text there."}
+    jsonld: {level: can, where: "Paste into theme.liquid (works on every plan except Starter/Lite)."}
+    content: {level: can, where: "Edit the page or theme text in the Shopify admin (Online Store → Pages). It can also be scripted through the API.", by_hand: false}
+  wordpress:
+    label: WordPress (self-managed)
+    robots: {level: can, where: "Edit the virtual robots.txt in the SEO plugin, or replace the physical robots.txt in the site root."}
+    llms:   {level: can, where: "Use one of the llms.txt plugins, or upload the file to the site root."}
+    jsonld: {level: can, where: "An SEO or schema plugin, a code-snippet plugin, or the theme header."}
+    content: {level: can, where: "Edit the page in WordPress. Edit page-builder pages inside the builder: writing to them through the API can corrupt Divi or Elementor layouts.", by_hand: false}
+  drupal:
+    label: Drupal
+    robots: {level: can, where: "Edit robots.txt in the site root."}
+    llms:   {level: can, where: "Upload the file to the site root (Drupal llms.txt modules are immature)."}
+    jsonld: {level: can, where: "A module, or the theme templates."}
+    content: {level: can, where: "Edit the page in the Drupal admin.", by_hand: false}
+  joomla:
+    label: Joomla
+    robots: {level: can, where: "Edit robots.txt in the site root."}
+    llms:   {level: can, where: "Upload the file to the site root (Joomla llms.txt modules are immature)."}
+    jsonld: {level: can, where: "A plugin, or the template."}
+    content: {level: can, where: "Edit the article in the Joomla admin.", by_hand: false}
+  webflow:
+    label: Webflow
+    robots: {level: can, where: "Site Settings → SEO → robots.txt (paid plans). Webflow also supports a Content-Signal header.", by_hand: true}
+    llms:   {level: can, where: "Upload in the dashboard (custom domain only). Dashboard only: the API cannot do it.", by_hand: true}
+    jsonld: {level: can, where: "Site Settings or Page Settings → Custom Code, pasted by hand. The API strips script tags, so it cannot be scripted.", by_hand: true}
+    content: {level: can, where: "Edit in the Webflow Designer or CMS. CMS items can also be written through the API.", by_hand: false}
+  wix:
+    label: Wix
+    robots: {level: can, where: "Edit robots.txt in the Wix SEO tools (Marketing & SEO → SEO Tools → Robots.txt Editor)."}
+    llms:   {level: gated, where: "Wix generates llms.txt itself, but the rollout is gated. Open /llms.txt on the live site first; if it is missing there is nothing we can add."}
+    jsonld: {level: can, where: "The Wix editor: Advanced SEO, or custom code in Settings.", by_hand: true}
+    content: {level: can, where: "Edit in the Wix editor. Body copy cannot be rewritten through any Wix API, so this is hand work.", by_hand: true}
+  hubspot:
+    label: HubSpot CMS
+    robots: {level: can, where: "Settings → Website → Pages → SEO & Crawlers → robots.txt."}
+    llms:   {level: cannot, where: "HubSpot has no native llms.txt support.", alternative: "Skip llms.txt on this platform. It is the weakest lever anyway (AEO_PLAYBOOK.md §3 P2). Put the effort into the fixes above."}
+    jsonld: {level: can, where: "Page head HTML (also available through the API)."}
+    content: {level: can, where: "Edit the page in the HubSpot editor (also available through the API).", by_hand: false}
+  duda:
+    label: Duda
+    robots: {level: can, where: "Replace the robots.txt file in the Duda site settings."}
+    llms:   {level: can, where: "Duda generates llms.txt itself. Check it at /llms.txt instead of uploading a file."}
+    jsonld: {level: can, where: "Site-wide or per-page head HTML in the Duda editor (head injection is not available through the API).", by_hand: true}
+    content: {level: can, where: "Edit the page in the Duda editor.", by_hand: false}
+  framer:
+    label: Framer
+    robots: {level: gated, where: "Pro plan: Site Settings → Static Files.", blocked_plans: [free, basic], by_hand: true}
+    llms:   {level: gated, where: "Pro plan: added by hand as a static file.", blocked_plans: [free, basic], by_hand: true}
+    jsonld: {level: can, where: "Site Settings → Custom Code. After publishing, fetch the page with JavaScript off and search for ld+json: nobody documents whether Framer puts it in the pre-rendered HTML.", by_hand: true}
+    content: {level: can, where: "Edit in Framer. There is no server-side API, so this is hand work.", by_hand: true}
+  squarespace:
+    label: Squarespace
+    robots:
+      level: cannot
+      where: "Squarespace never lets you edit robots.txt, at any plan."
+      alternative: "Revert to the client. The only controls are the all-or-nothing AI crawler checkbox in Settings → Crawlers (it lists training bots but misses the search bots that drive citations), or putting Cloudflare in front of the domain."
+    llms:   {level: gated, where: "Squarespace 7.1 only, and only by hand.", by_hand: true}
+    jsonld: {level: gated, where: "Settings → Advanced → Code Injection (Core plan or higher).", blocked_plans: [basic], by_hand: true}
+    content: {level: can, where: "Edit each page in the Squarespace editor, by hand: there is no content API.", by_hand: true}
+  wordpress_com:
+    label: WordPress.com
+    robots: {level: gated, where: "Personal plan or higher, through a plugin.", blocked_plans: [free]}
+    llms:   {level: gated, where: "Personal plan or higher, through a plugin.", blocked_plans: [free]}
+    jsonld: {level: gated, where: "A schema plugin (Personal plan or higher).", blocked_plans: [free]}
+    content: {level: can, where: "Edit the page in the WordPress editor.", by_hand: false}
+
+# What to say when the platform is unknown or custom.
+unknown_platform:
+  label: this site
+  robots: {level: unknown, where: "Wherever the site's robots.txt is served from (the web server, the CMS or the hosting panel). Ask whoever manages the hosting."}
+  llms:   {level: unknown, where: "The site root, next to robots.txt."}
+  jsonld: {level: unknown, where: "The <head> of the page, as a script of type application/ld+json."}
+  content: {level: unknown, where: "Edit the page in whatever editor the site uses."}
+
+# Access problems that sit at the edge (CDN / host), whatever the website platform is. These are matched on the
+# CDN or host the diagnosis saw. `edge` is used for fixes about bots being refused or challenged.
+edge:
+  cloudflare:
+    level: can
+    where: "Cloudflare dashboard. Three separate systems can each block AI bots and all three need checking: AI Crawl Control, Managed robots.txt, and Bot Fight Mode. Allow the Search category."
+    source: "research/PLATFORM_DELIVERY.md §3 (Cloudflare)"
+  wp_engine:
+    level: cannot
+    where: "WP Engine rate-limits some AI bots platform-wide, and the rule cannot be switched off per bot."
+    alternative: "Escalate to WP Engine, or move to a different host. Price the move as its own line item."
+    source: "research/PLATFORM_DELIVERY.md §3 (WP Engine); Search Engine Land, April 2026"
+  default:
+    level: unknown
+    where: "Hosting / CDN / firewall settings: ask whoever manages the hosting to allow these bots by user agent, then run `aeo diagnose` again."
+    source: "research/PLATFORM_DELIVERY.md §7"

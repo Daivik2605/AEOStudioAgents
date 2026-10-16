@@ -65,6 +65,9 @@ REGISTRY: dict[str, str] = {
     "SCHEMA_OPENING_HOURS_EMPTY": "low",
     "SCHEMA_SAMEAS_HAS_TRACKING_PARAMS": "low",
     "SCHEMA_ENTITIES_UNLINKED": "low",
+    # ---- audit-based fixes (written by `aeo recommend`, not by the diagnosis) -----------
+    "AUDIT_WRONG_FACT": "high",               # AI states something that contradicts a confirmed fact
+    "AUDIT_TARGET_QUESTION_GAP": "medium",    # a target question where competitors are named and the client is not
 }
 
 
