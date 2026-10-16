@@ -13,6 +13,8 @@ from audit.cost_gate import CostGateAborted
 from audit.fill_in import ImportRefused, generate_fill_in, import_fill_in
 from audit.manual import AuditError, run_manual_audit
 from audit.report import ReportError, make_report
+from recommend.run import RecommendError, make_recommendations
+from recommend.robots_file import TRAINING_MODES
 from audit.summary import summary_lines
 from core import client_files, evidence as ev, files_migrate, timeline as tl
 from core.businesses import (ACCESS_LEVELS, ENGAGEMENT_TYPES, BusinessError, add_with_checks, get_engagement,
@@ -292,6 +294,45 @@ def audit_report(
     typer.echo("Scores saved to visibility_scores." if made.scores_saved else "Scores were not saved (unfinished run).")
     typer.echo(f"Report: {made.md_path}")
     typer.echo(f"Data:   {made.json_path}")
+
+
+
+# ---- recommend (PLAN.md section 3.3) -------------------------------------------------------------------------
+
+@app.command("recommend")
+def recommend(
+    business: str = typer.Option(..., "--business", help="Business id, domain or name."),
+    run: Optional[str] = typer.Option(None, "--run", help="The finished audit run to prioritise by (default: the latest finished one)."),
+    diagnosis: Optional[str] = typer.Option(None, "--diagnosis", help="The diagnosis id to use (default: the latest)."),
+    no_audit: bool = typer.Option(False, "--no-audit", help="Go ahead without a finished audit. The fix list says it was not prioritised by one."),
+    training_bots: str = typer.Option("keep", "--training-bots", help="What robots.txt does about AI training bots (GPTBot, ClaudeBot): "
+                                      + ", ".join(TRAINING_MODES) + ". 'keep' changes nothing about them."),
+) -> None:
+    """Write the on-page fixes for a client: robots.txt, llms.txt, schema.json and a prioritised fix list. No AI. Never touches the live site."""
+    b = _find_business(business)
+    try:
+        made = make_recommendations(b, run=run, diagnosis=diagnosis, no_audit=no_audit, training_bots=training_bots)
+    except RecommendError as exc:
+        _fail(str(exc))
+    d = made.data
+    typer.echo(f"Recommendations for {b['name'] or b['domain']}: {len(d['fixes'])} fix(es).")
+    if not d["prioritised_by_audit"]:
+        typer.secho("NOT PRIORITISED BY AN AUDIT: the list says so at the top.", fg=typer.colors.YELLOW, bold=True)
+    for w in made.warnings:
+        typer.secho(w, fg=typer.colors.YELLOW)
+    cannot = [f for f in d["fixes"] if f["cannot_do"]]
+    if cannot:
+        typer.secho(f"{len(cannot)} fix(es) cannot be done on this platform; the document says what to do instead.", fg=typer.colors.YELLOW)
+    if d["jsonld"]["status"] != "valid":
+        typer.secho("schema.json was NOT written: " + " ".join(d["jsonld"]["errors"]), fg=typer.colors.YELLOW)
+    typer.echo("")
+    typer.echo("robots.txt compared with the live file:")
+    typer.echo(made.robots_diff.rstrip("\n") if made.robots_diff else "(no difference)")
+    typer.echo("")
+    for key in ("recommendations", "robots", "llms", "schema"):
+        if key in made.paths:
+            typer.echo(f"{key:16s}{made.paths[key]}")
+    typer.echo("Nothing was sent or deployed. A person puts these files on the site.")
 
 
 # ---- engagement, evidence, work log, events, timeline (PLAN.md sections 2 and 10) -------------------------
