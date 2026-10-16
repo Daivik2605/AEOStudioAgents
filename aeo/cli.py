@@ -13,6 +13,7 @@ from audit.cost_gate import CostGateAborted
 from audit.fill_in import ImportRefused, generate_fill_in, import_fill_in
 from audit.manual import AuditError, run_manual_audit
 from audit.report import ReportError, make_report
+from compare.run import CompareError, make_comparison
 from recommend.run import RecommendError, make_recommendations
 from recommend.robots_file import TRAINING_MODES
 from audit.summary import summary_lines
@@ -333,6 +334,41 @@ def recommend(
         if key in made.paths:
             typer.echo(f"{key:16s}{made.paths[key]}")
     typer.echo("Nothing was sent or deployed. A person puts these files on the site.")
+
+
+
+# ---- compare (PLAN.md step 20) ------------------------------------------------------------------------------------
+
+@app.command("compare")
+def compare(
+    label_a: str = typer.Argument(..., help="The earlier checkpoint. " + CHECKPOINT_HELP),
+    label_b: str = typer.Argument(..., help="The later checkpoint."),
+    business: str = typer.Option(..., "--business", help="Business id, domain or name."),
+    a_run: Optional[str] = typer.Option(None, "--a-run", help="The audit run to use for A (default: the latest finished one at that checkpoint)."),
+    b_run: Optional[str] = typer.Option(None, "--b-run", help="The audit run to use for B."),
+    a_diagnosis: Optional[str] = typer.Option(None, "--a-diagnosis", help="The diagnosis to use for A (default: the latest at that checkpoint)."),
+    b_diagnosis: Optional[str] = typer.Option(None, "--b-diagnosis", help="The diagnosis to use for B."),
+) -> None:
+    """Compare two checkpoints: findings closed / still open / new, and audit scores with ranges. No AI."""
+    b = _find_business(business)
+    try:
+        made = make_comparison(b, label_a, label_b, a_run=a_run, b_run=b_run, a_diagnosis=a_diagnosis, b_diagnosis=b_diagnosis)
+    except (CompareError, CheckpointError) as exc:
+        _fail(str(exc))
+    d, a = made.data["diagnosis"], made.data["audit"]
+    typer.echo(f"{label_a} vs {label_b} for {b['name'] or b['domain']}.")
+    typer.echo(("Diagnosis: " + d["headline"] + ".") if d["available"] else f"Diagnosis: not compared ({d['reason']}).")
+    if a["available"]:
+        v = a["headline"]["measures"]["visibility"]["change"]
+        typer.echo(f"Audit ({a['design']['label']}): visibility {v['value']:+.1f} points, {v['label']}. "
+                   + made.data["detection_floor"]["text"])
+    else:
+        typer.echo(f"Audit: not compared ({a['reason']}).")
+    events = made.data["between"]["events"]
+    if events:
+        typer.secho(f"{events} event(s) outside our control happened in between; the document flags them.", fg=typer.colors.YELLOW)
+    typer.echo(f"Comparison: {made.md_path}")
+    typer.echo(f"Data:       {made.json_path}")
 
 
 # ---- engagement, evidence, work log, events, timeline (PLAN.md sections 2 and 10) -------------------------
