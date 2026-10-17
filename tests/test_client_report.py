@@ -20,6 +20,7 @@ from client_report.render import render_html
 from client_report.run import make_client_report, rebuild_from_json
 from client_report.strings import STRINGS, t
 from client_report.summaries import allowed_numbers, check_summary, planned_sections
+from client_report.words import Words
 from compare.run import build_comparison
 from conftest import FakeAnthropicClient, text_response
 from core import evidence as ev
@@ -140,7 +141,7 @@ def test_starting_point_sections(starting, tmp_path):
         assert f"<h2>{h}</h2>" in page
     health = section(res, "health")["data"]
     assert health["comparison"]["labels"] == ["before", "after_site"] and health["comparison"]["headline"] == "2 of 3 findings closed"
-    assert "2 of 3 findings closed" in page
+    assert "2 of 3 closed · 1 new" in page                        # the client headline always counts the new finding
     assert section(res, "ai_today")["data"]["available"] and section(res, "recommend")["data"]["available"]
 
 
@@ -155,7 +156,7 @@ def test_starting_point_includes_the_sentence_we_use_exactly(starting, tmp_path)
 def test_starting_point_with_nothing_yet_says_so_instead_of_failing(biz, tmp_path):
     res = make(biz, tmp_path, "starting_point")
     page = html_of(res)
-    assert "No website check has been run yet." in page and "No finished measurement of what AI says exists yet." in page
+    assert "No website check has been run yet." in page and "That measurement is the next step." in page
     assert "No recommendations have been prepared yet." in page and "No evidence has been shared with you yet." in page
 
 
@@ -165,11 +166,13 @@ def test_recommendation_titles_come_from_the_recommend_table(starting, tmp_path)
     rec = section(res, "recommend")["data"]
     page = html_of(res)
     assert rec["available"] and rec["fixes"]
+    words = Words(res.data)
     for fix in rec["fixes"]:
-        assert escape(fix["title"]) in page
+        assert escape(words.fix_title(fix, rec["platform"])) in page          # the client's title for every fix ...
+        assert escape(fix["title"]) not in page                              # ... and never the internal one
     assert {f["section"] for f in rec["fixes"]} >= {"wrong_fact", "finding", "hygiene"}
     assert "Correct what AI says wrongly" in page and "Small extras (low effort, unproven)" in page
-    assert "AI says: " in page                                  # the wrong-fact fix, in plain words
+    assert "Correct this wrong statement AI tools make about you: “Only serves Ontario”" in page
     # same fixes as the table `aeo recommend` filled, in the same ids
     conn = get_connection()
     try:
@@ -187,7 +190,7 @@ def test_a_fix_that_cannot_be_done_on_the_platform_is_flagged_in_plain_words(biz
     make_recommendations(biz, fetcher=fake_site(), no_audit=True, clients_root=tmp_path / "clients", today=TODAY)
     page = html_of(make(biz, tmp_path, "starting_point"))
     assert "cannot be done on your current website platform" in page and "Let AI search tools reach your site" in page
-    assert "Not prioritised" not in page and "were not prioritised by a measurement" in page
+    assert "The order comes from the website check" in page and "The order comes from what the measurements found" not in page
 
 
 def test_work_done_sections(biz, tmp_path):
@@ -201,7 +204,8 @@ def test_work_done_sections(biz, tmp_path):
     assert [w["text"] for w in items] == ["Added a heading to the home page", "Reviewed the sitemap"]
     assert items[0]["finding_code"] == "RENDER_H1_MISSING" and items[0]["finding"] == "RENDER_H1_MISSING what"
     page = html_of(res)
-    assert "Added a heading to the home page" in page and "<code>RENDER_H1_MISSING</code>" in page and "General work" in page
+    assert "Added a heading to the home page" in page and "Your page has no main heading" in page and "General work" in page
+    assert "RENDER_H1_MISSING" not in page and "<code>" not in page
     assert page.index("Added a heading") < page.index("Reviewed the sitemap")
     assert "Priya" in page and "data:image/png;base64," in page
 
@@ -213,7 +217,7 @@ def test_results_sections(small_pair, tmp_path):
     assert keys(res) == ["r_health", "r_ai", "r_targets", "r_questions", "r_voice", "r_facts", "r_sources", "r_between"]
     assert res.data["labels"] == {"a": "before", "b": "after_aeo"}
     page = html_of(res)
-    assert "1 of 2 findings closed" in page and "Rewrote the services page" in page
+    assert "1 of 2 closed" in page and "findings closed" not in page and "Rewrote the services page" in page
     assert "<span class='tag event'>Outside our control</span>" in page and "outside our control happened in this period" in page
 
 
@@ -287,7 +291,8 @@ def test_screenshots_are_embedded_and_pdfs_are_listed_with_date_source_and_note(
     pdf = next(e for e in section(res, "evidence")["data"]["items"] if e["file"].endswith(".pdf"))
     assert pdf["embedded"] is False and pdf["data_uri"] is None and pdf["source"] == "us"
     assert pdf["captured_on"] == datetime.now(timezone.utc).date().isoformat() and "Cloudflare report" in pdf["note"]
-    assert "cdn_report.pdf" in page and "JVBER" not in page and "%PDF" not in page          # listed, never embedded
+    assert "Website traffic report (Cloudflare)" in page and "cdn_report" not in page
+    assert "JVBER" not in page and "%PDF" not in page                                       # listed, never embedded
     assert "Not shown here (listed only)" in page and "AEO Studio</td>" in page
 
 
@@ -437,7 +442,7 @@ def test_a_plain_link_in_an_evidence_note_is_text_not_a_link(starting, tmp_path)
 def test_it_is_one_self_contained_file_with_a_print_stylesheet(starting, tmp_path):
     page = html_of(make(starting, tmp_path, "starting_point"))
     assert page.startswith("<!doctype html>") and page.count("<style>") == 1
-    assert "@media print" in page and "break-inside:avoid" in page and "@page" in page and "break-before:page" in page
+    assert "@media print" in page and "break-inside:avoid" in page and "@page" in page
 
 
 def test_charts_are_inline_svg_and_readable_in_greyscale(starting, small_pair, tmp_path):

@@ -13,6 +13,7 @@ from html import escape as E
 from client_report import charts
 from compare.audit import DETECTION_FLOOR_POINTS
 from client_report.strings import t
+from client_report.words import Words
 
 CSS = """
 :root{--ink:#1b1b1b;--mid:#555;--rule:#c9c9c9;--soft:#f3f3f3;--paper:#fff}
@@ -48,15 +49,12 @@ footer{margin-top:34px;padding-top:12px;border-top:3px solid var(--ink);font-siz
 @page{size:A4;margin:16mm 14mm}
 @media print{
  body{background:#fff;font-size:10.5pt}.page{max-width:none;padding:0}
- h2,h3{break-after:avoid}
- table,figure,.summary,.box,.warn,blockquote,svg.chart,tr{break-inside:avoid}
+ h2,h3{break-after:avoid;page-break-after:avoid}
+ table,ul,ol,dl,li,figure,.summary,.box,.warn,blockquote,svg.chart,.keep,tr{break-inside:avoid;page-break-inside:avoid}
  thead{display:table-header-group}
- .newpage{break-before:page}
  *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
 """
-
-NEW_PAGE = {"ai_today", "r_ai", "work"}
 
 
 # ---- tiny helpers ---------------------------------------------------------------------------------------------------------
@@ -96,6 +94,7 @@ class Ctx:
         self.lang = report["tool"]["language"]
         self.client = report["business"]["name"] or report["business"]["domain"]
         self.labels = report["labels"]
+        self.w = Words(report)                  # the client's words for labels, platforms, findings and fixes
 
     def t(self, key: str, **kw) -> str:
         return t(key, self.lang, **kw)
@@ -103,33 +102,40 @@ class Ctx:
 
 # ---- diagnosis / health -----------------------------------------------------------------------------------------------------
 
-def _findings_table(c: Ctx, findings: list[dict]) -> str:
+def _finding_text(c: Ctx, f: dict, platform: str | None) -> str:
+    """The sentence the client reads for one finding. The internal wording (f["what"]) is never shown."""
+    return c.w.finding(f, f.get("platform") or platform)
+
+
+def _findings_table(c: Ctx, findings: list[dict], platform: str | None) -> str:
     if not findings:
         return f"<p>{E(c.t('health.no_findings'))}</p>"
     return table([c.t("health.col.severity"), c.t("health.col.what")],
-                 [[E(c.t(f"severity.{f['severity']}")), E(f["what"])] for f in findings])
+                 [[E(c.t(f"severity.{f['severity']}")), E(_finding_text(c, f, platform))] for f in findings])
 
 
-def _health_comparison(c: Ctx, d: dict, labels: tuple[str, str]) -> str:
-    out = [f"<h3>{E(c.t('health.compared', a=labels[0], b=labels[1]))}</h3>", f"<p class='box'><strong>{E(d['headline'])}.</strong></p>",
+def _health_comparison(c: Ctx, d: dict) -> str:
+    la, lb = c.w.label(d["a"]["checkpoint"], d["a"]["date"]), c.w.label(d["b"]["checkpoint"], d["b"]["date"])
+    out = [f"<h3>{E(c.t('health.compared', a=la, b=lb))}</h3>", f"<p class='box'><strong>{E(c.w.headline(d))}</strong></p>",
            f"<p class='small'>{E(c.t('health.deterministic'))}</p>"]
-    for caution in d.get("caveats", []):
-        out.append(f"<p class='warn'>{E(c.t('health.caution'))}: {E(caution)}</p>")
-    rows = []
-    for key, name in (("platform", "health.row.platform"), ("verdict", "health.row.verdict")):
-        ch = d[key]
-        rows.append([E(c.t(name)), E(str(ch["a"] or "-")), E(str(ch["b"] or "-")) + (f" <span class='tag'>{E(c.t('health.changed'))}</span>" if ch["changed"] else "")])
-    out.append(table(["", labels[0], labels[1]], rows))
+    if d.get("caveats"):         # one fixed sentence; the internal caveat text names finding codes
+        out.append(f"<p class='warn'>{E(c.t('health.caution'))}: {E(c.t('health.caveat'))}</p>")
+    changed = f" <span class='tag'>{E(c.t('health.changed'))}</span>"
+    rows = [[E(c.t("health.row.platform")), E(c.w.platform(d["platform"]["a"])),
+             E(c.w.platform(d["platform"]["b"])) + (changed if d["platform"]["changed"] else "")],
+            [E(c.t("health.row.verdict")), E(c.w.verdict(d["verdict"]["a"])),
+             E(c.w.verdict(d["verdict"]["b"])) + (changed if d["verdict"]["changed"] else "")]]
+    out.append(table(["", la[:1].upper() + la[1:], lb[:1].upper() + lb[1:]], rows))
 
     def items(group: list[dict], show_work: bool) -> str:
         lis = []
         for f in group:
-            line = f"<strong>{E(c.t('severity.' + f['severity']))}.</strong> {E(f['what'])}"
-            if show_work:
-                work = f.get("work") or []
-                line += "".join(f"<br><span class='small'>{E(c.t('health.work_logged', text=w['text'], date=w['date'], who=w['operator']))}</span>" for w in work)
-                if not work:
-                    line += f"<br><span class='small'>{E(c.t('health.no_work'))}</span>"
+            line = f"<strong>{E(c.t('severity.' + f['severity']))}.</strong> {E(_finding_text(c, f, None))}"
+            work = f.get("work") or [] if show_work else []
+            line += "".join(f"<br><span class='small'>{E(c.t('health.work_logged', text=w['text'], date=w['date'], who=w['operator']))}</span>" for w in work)
+            # Only a logged piece of work, or a replaced website, explains a closed finding. With neither: say nothing.
+            if show_work and not work and f.get("site_replaced"):
+                line += f"<br><span class='small'>{E(c.t('health.fixed_by_new_site'))}</span>"
             lis.append(line)
         return bullet(lis) or f"<p>{E(c.t('health.none_listed'))}</p>"
     out += [f"<h3>{E(c.t('health.closed', n=len(d['closed'])))}</h3>", items(d["closed"], True),
@@ -141,19 +147,21 @@ def _health_comparison(c: Ctx, d: dict, labels: tuple[str, str]) -> str:
 def r_health(c: Ctx, d: dict) -> str:
     if not d.get("available"):
         return f"<p>{E(c.t('health.none'))}</p>"
-    return _health_comparison(c, d, (c.labels["a"], c.labels["b"]))
+    return _health_comparison(c, d)
 
 
 def health(c: Ctx, d: dict) -> str:
     if not d.get("available"):
         return f"<p>{E(c.t('health.none'))}</p>"
     L = d["latest"]
-    out = [f"<p>{E(c.t('health.checked', date=L['date'], checkpoint=L['checkpoint'] or '-'))} "
-           + E(c.t("health.platform", platform=L["platform"]) if L["platform"] else c.t("health.platform_unknown")) + "</p>",
+    checked = (c.t("health.checked_label", date=L["date"], label=c.w.label(L["checkpoint"], L["date"])) if L["checkpoint"]
+               else c.t("health.checked", date=L["date"]))
+    out = [f"<p>{E(checked)} "
+           + E(c.t("health.platform", platform=c.w.platform(L["platform"])) if L["platform"] else c.t("health.platform_unknown")) + "</p>",
            f"<p><strong>{E(c.t('health.verdict.' + L['verdict']))}</strong></p>",
-           f"<h3>{E(c.t('health.findings'))}</h3>", _findings_table(c, L["findings"])]
+           f"<h3>{E(c.t('health.findings'))}</h3>", _findings_table(c, L["findings"], L["platform"])]
     if d.get("comparison"):
-        out.append(_health_comparison(c, d["comparison"], tuple(d["comparison"]["labels"])))
+        out.append(_health_comparison(c, d["comparison"]))
     return "".join(out)
 
 
@@ -245,7 +253,7 @@ def r_ai(c: Ctx, d: dict) -> str:
     if not d.get("available"):
         return f"<p>{E(c.t('ai.none'))}: {E(d.get('reason') or '')}</p>"
     h, a, b = d["headline"], d["a"], d["b"]
-    la, lb = c.labels["a"], c.labels["b"]
+    la, lb = c.w.side("a"), c.w.side("b")
     out = [_design_banner(c, d["design"]),
            f"<p class='warn'>{E(c.t('ai.floor', points=d['detection_floor']['points']))}</p>",
            f"<p><strong>{E(c.t('ai.tier_change', a=h['tier_a'], b=h['tier_b']))}</strong></p>",
@@ -304,8 +312,8 @@ def r_voice(c: Ctx, d: dict) -> str:
 
     def where(row):
         return c.t("sov.client_absent") if row is None else c.t("sov.client_text", rank=row["rank"], of=row["of_businesses"], answers=row["answers"], rec=row["recommended"])
-    out = bullet([E(c.t("sov.client_a", client=c.client, label=c.labels["a"], text=where(d["client"]["a"]))),
-                  E(c.t("sov.client_a", client=c.client, label=c.labels["b"], text=where(d["client"]["b"])))])
+    out = bullet([E(c.t("sov.client_a", client=c.client, label=c.w.side("a"), text=where(d["client"]["a"]))),
+                  E(c.t("sov.client_a", client=c.client, label=c.w.side("b"), text=where(d["client"]["b"])))])
     for title, key in (("sov.gained", "gained"), ("sov.lost", "lost")):
         out += f"<h3>{E(c.t(title))}</h3>" + (bullet([E(c.t("sov.move", name=m["name"], a=m["a"], b=m["b"])) for m in d[key]]) or f"<p>{E(c.t('health.none_listed'))}</p>")
     return out + f"<p class='small'>{E(c.t('sov.counts_only'))} {E(c.t('sov.small'))}</p>"
@@ -326,7 +334,7 @@ def r_facts(c: Ctx, d: dict) -> str:
 def r_sources(c: Ctx, d: dict) -> str:
     if not d.get("available"):
         return f"<p>{E(c.t('ai.none'))}</p>"
-    return f"<p>{E(c.t('src.client', a_label=c.labels['a'], a=d['a']['client_cited_in'], a_n=d['a']['answers'], b_label=c.labels['b'], b=d['b']['client_cited_in'], b_n=d['b']['answers']))}</p>"
+    return f"<p>{E(c.t('src.client', a_label=c.w.side('a'), a=d['a']['client_cited_in'], a_n=d['a']['answers'], b_label=c.w.side('b'), b=d['b']['client_cited_in'], b_n=d['b']['answers']))}</p>"
 
 
 def r_between(c: Ctx, d: dict) -> str:
@@ -348,15 +356,19 @@ def r_between(c: Ctx, d: dict) -> str:
 def recommend(c: Ctx, d: dict) -> str:
     if not d.get("available"):
         return f"<p>{E(c.t('rec.none'))}</p>"
-    out = [f"<p>{E(c.t('rec.intro'))} <span class='small'>{E(c.t('rec.prepared', date=d['date']))}</span></p>"]
-    if not d["prioritised_by_audit"]:
-        out.append(f"<p class='warn'>{E(c.t('rec.not_prioritised'))}</p>")
+    intro = c.t("rec.intro") if d["prioritised_by_audit"] else c.t("rec.intro.no_audit")
+    out = [f"<p>{E(intro)} <span class='small'>{E(c.t('rec.prepared', date=d['date']))}</span></p>"]
     for section in ("access", "wrong_fact", "target_question", "finding", "hygiene"):
         items = [f for f in d["fixes"] if f["section"] == section]
         if items:
             out.append(f"<h3>{E(c.t('rec.section.' + section))}</h3>" + bullet(
-                [E(f["title"]) + (f" <span class='small'>({E(c.t('rec.cannot'))})</span>" if f["cannot_do"] else "") for f in items]))
+                [E(c.w.fix_title(f, d.get("platform"))) + (f" <span class='small'>({E(c.t('rec.cannot'))})</span>" if f["cannot_do"] else "") for f in items]))
     return "".join(out)
+
+
+def _source(c: Ctx, e: dict) -> str:
+    key = "ev.source." + (e["source"] or "")
+    return c.t(key) if e["source"] and c.w.has(key) else (e["source"] or "")
 
 
 def evidence(c: Ctx, d: dict) -> str:
@@ -366,17 +378,16 @@ def evidence(c: Ctx, d: dict) -> str:
     out = [f"<p class='small'>{E(c.t('ev.intro'))}</p>"]
     for e in items:
         if e["embedded"]:
-            cap = f"{e['captured_on']}: {c.t('ev.source.' + e['source']) if e['source'] else ''} {e['note'] or ''}".strip()
-            out.append(f"<figure><img alt=\"{E(e['note'] or e['file'])}\" src=\"{e['data_uri']}\"><figcaption>{E(cap)}</figcaption></figure>")
+            cap = f"{e['captured_on']}: {_source(c, e)} {e['note'] or ''}".strip()
+            out.append(f"<figure><img alt=\"{E(e['note'] or c.w.evidence_type(e['type']))}\" src=\"{e['data_uri']}\"><figcaption>{E(cap)}</figcaption></figure>")
     listed = [e for e in items if not e["embedded"]]
     if listed:
         rows = []
         for e in listed:
             period = f"<br><span class='small'>{E(c.t('ev.period', start=e['period_start'], end=e['period_end']))}</span>" if e["period_start"] else ""
             missing = f"<br><span class='small'>{E(c.t('ev.not_embedded'))}</span>" if e["kind"] == "image" else ""
-            rows.append([E(e["captured_on"]), E(e["type"]), E(c.t("ev.source." + e["source"]) if e["source"] else "-"),
-                         E(e["note"] or "-") + period, E(e["file"]) + missing])
-        out.append(f"<h3>{E(c.t('ev.listed'))}</h3>" + table([c.t("ev.col.date"), c.t("ev.col.type"), c.t("ev.col.source"), c.t("ev.col.note"), c.t("ev.col.file")], rows))
+            rows.append([E(e["captured_on"]), E(c.w.evidence_type(e["type"])), E(_source(c, e) or "-"), E(e["note"] or "-") + period + missing])
+        out.append(f"<h3>{E(c.t('ev.listed'))}</h3>" + table([c.t("ev.col.date"), c.t("ev.col.type"), c.t("ev.col.source"), c.t("ev.col.note")], rows))
     return "".join(out)
 
 
@@ -386,8 +397,10 @@ def work(c: Ctx, d: dict) -> str:
         return f"<p>{E(c.t('work.none'))}</p>"
     rows = []
     for w in items:
-        if w["finding_code"]:
-            closes = E(w["finding"] or w["finding_code"]) + f" <code>{E(w['finding_code'])}</code>"
+        if w["finding_code"] and w.get("finding"):
+            closes = E(c.w.finding({"code": w["finding_code"], "evidence": w.get("finding_evidence")}, w.get("finding_platform")))
+        elif w["finding_code"]:
+            closes = E(c.t("finding.UNKNOWN"))
         else:
             closes = E(c.t("work.general"))
         rows.append([E(w["date"]), E(w["text"]), closes, E(w["operator"])])
@@ -395,13 +408,20 @@ def work(c: Ctx, d: dict) -> str:
 
 
 def promise(c: Ctx, d: dict) -> str:
-    return f"<blockquote>{E(c.t('promise.sentence'))}</blockquote><p>{E(c.t('promise.cannot'))}</p>"
+    """The sentence we use says what AI says about the client, so it needs a finished audit behind it (PLAN.md section 6).
+    Without one, only the plain statement of what comes next."""
+    sentence = c.t("promise.sentence") if d.get("audit") else c.t("promise.next")
+    return f"<blockquote>{E(sentence)}</blockquote><p>{E(c.t('promise.cannot'))}</p>"
 
 
-RENDERERS = {"health": health, "ai_today": ai_today, "questions": questions, "recommend": recommend, "evidence": evidence,
+def ai_next(c: Ctx, d: dict) -> str:
+    return f"<p>{E(c.t('ai_next.body'))}</p>"
+
+
+RENDERERS = {"ai_next": ai_next, "health": health, "ai_today": ai_today, "questions": questions, "recommend": recommend, "evidence": evidence,
              "promise": promise, "work": work, "r_health": r_health, "r_ai": r_ai, "r_targets": r_targets,
              "r_questions": questions, "r_voice": r_voice, "r_facts": r_facts, "r_sources": r_sources, "r_between": r_between}
-HEADINGS = {"health": "h.health", "ai_today": "h.ai_today", "questions": "h.questions", "recommend": "h.recommend",
+HEADINGS = {"ai_next": "h.ai_next", "health": "h.health", "ai_today": "h.ai_today", "questions": "h.questions", "recommend": "h.recommend",
             "evidence": "h.evidence", "promise": "h.promise", "work": "h.work", "r_health": "h.r_health", "r_ai": "h.r_ai",
             "r_targets": "h.r_targets", "r_questions": "h.r_questions", "r_voice": "h.r_voice", "r_facts": "h.r_facts",
             "r_sources": "h.r_sources", "r_between": "h.r_between"}
@@ -416,9 +436,11 @@ def render_html(report: dict) -> str:
         if s.get("summary"):
             summary = (f"<div class='summary'><h3>{E(c.t('h.summary'))}</h3><p>{E(s['summary'])}</p>"
                        f"<p class='small'>{E(c.t('ai.summary_label'))}</p></div>")
-        cls = "sec newpage" if s["key"] in NEW_PAGE else "sec"
-        body.append(f"<section class='{cls}' id='{E(s['key'])}'><h2>{E(c.t(HEADINGS[s['key']]))}</h2>{summary}{RENDERERS[s['key']](c, s['data'])}</section>")
-    intro = c.t("intro." + report["stage"], a=c.labels["a"], b=c.labels["b"])
+        body.append(f"<section class='sec' id='{E(s['key'])}'><h2>{E(c.t(HEADINGS[s['key']]))}</h2>{summary}{RENDERERS[s['key']](c, s['data'])}</section>")
+    intro_key = "intro." + report["stage"]
+    if report["stage"] == "starting_point" and not any(s["key"] == "promise" and s["data"].get("audit") for s in report["sections"]):
+        intro_key += ".no_audit"        # do not say "what AI says about you" when nothing has been measured
+    intro = c.t(intro_key, a=c.w.side("a") if c.labels["a"] else "", b=c.w.side("b") if c.labels["b"] else "")
     return (
         "<!doctype html>\n<html lang=\"" + E(c.lang) + "\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"

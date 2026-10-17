@@ -18,10 +18,11 @@ from typing import Callable
 
 from audit.cost_gate import confirm_cost
 from client_report.strings import STRINGS
+from client_report.words import Words
 from core import llm
 
 MODEL = "claude-sonnet-5"          # price is in core/model_prices.json
-PROMPT_VERSION = "v1"              # prompts/client_report/v1.md
+PROMPT_VERSION = "v2"              # prompts/client_report/v2.md (v1 stays on disk: it produced earlier reports)
 PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "client_report" / f"{PROMPT_VERSION}.md"
 AGENT = "client_report"
 
@@ -97,16 +98,19 @@ def check_summary(text: str, allowed: set[str]) -> str | None:
     return None
 
 
-def summary_facts(key: str, data: dict) -> dict | None:
-    """The compact facts the model may use for one section. None means there is nothing to summarise."""
+def summary_facts(key: str, data: dict, w: Words) -> dict | None:
+    """The compact facts the model may use for one section. None means there is nothing to summarise.
+    They are in the client's words (w), so the model never sees an internal label or finding code."""
     if key == "health":
         if not data.get("available"):
             return None
-        out = {"verdict": data["latest"]["verdict"], "platform": data["latest"]["platform"], "date": data["latest"]["date"],
-               "findings": [{"severity": f["severity"], "what": f["what"]} for f in data["latest"]["findings"]][:12]}
+        latest = data["latest"]
+        out = {"verdict": w.verdict(latest["verdict"]), "platform": w.platform(latest["platform"]), "date": latest["date"],
+               "findings": [{"severity": f["severity"], "what": w.finding(f, latest["platform"])} for f in latest["findings"]][:12]}
         if data.get("comparison"):
             c = data["comparison"]
-            out["compared"] = {"from": c["labels"][0], "to": c["labels"][1], "headline": c["headline"]}
+            out["compared"] = {"from": w.label(c["a"]["checkpoint"], c["a"]["date"]), "to": w.label(c["b"]["checkpoint"], c["b"]["date"]),
+                               "headline": w.headline(c)}
         return out
     if key in ("ai_today", "r_ai"):
         if not data.get("available"):
@@ -124,15 +128,16 @@ def summary_facts(key: str, data: dict) -> dict | None:
     if key == "recommend":
         if not data.get("available"):
             return None
-        return {"fixes": [f["title"] for f in data["fixes"]][:15]}
+        return {"fixes": [w.fix_title(f, data.get("platform")) for f in data["fixes"]][:15]}
     if key == "work":
         items = data.get("items") or []
-        return {"entries": [{"date": w["date"], "work": w["text"], "closes": w["finding"]} for w in items][:25]} if items else None
+        return {"entries": [{"date": x["date"], "work": x["text"], "closes": w.finding({"code": x["finding_code"], "evidence": x.get("finding_evidence")}, x.get("finding_platform"))
+                                if x["finding_code"] and x.get("finding") else None} for x in items][:25]} if items else None
     if key == "r_health":
         if not data.get("available"):
             return None
-        return {"headline": data["headline"], "closed": [c["what"] for c in data["closed"]][:10],
-                "still_open": [c["what"] for c in data["still_open"]][:10], "new": [c["what"] for c in data["new"]][:10]}
+        say = lambda group: [w.finding(c, c.get("platform")) for c in group][:10]  # noqa: E731
+        return {"headline": w.headline(data), "closed": say(data["closed"]), "still_open": say(data["still_open"]), "new": say(data["new"])}
     if key == "r_between":
         items = data.get("entries") or []
         return {"from": data["from"], "to": data["to"], "entries": [
@@ -142,7 +147,8 @@ def summary_facts(key: str, data: dict) -> dict | None:
 
 
 def planned_sections(report: dict) -> list[dict]:
-    return [s for s in report["sections"] if s["key"] in SUMMARY_SECTIONS and summary_facts(s["key"], s["data"]) is not None]
+    w = Words(report)
+    return [s for s in report["sections"] if s["key"] in SUMMARY_SECTIONS and summary_facts(s["key"], s["data"], w) is not None]
 
 
 def add_summaries(report: dict, *, ask: Callable[[str], str], say: Callable[[str], None], client=None) -> dict:
@@ -156,8 +162,9 @@ def add_summaries(report: dict, *, ask: Callable[[str], str], say: Callable[[str
     allowed = allowed_numbers(report)
     report["ai"].update(used=True, model=MODEL, calls=len(sections))
     system = PROMPT_PATH.read_text()
+    w = Words(report)
     for s in sections:
-        payload = {"stage": report["stage"], "section": s["key"], "facts": summary_facts(s["key"], s["data"])}
+        payload = {"stage": report["stage"], "section": s["key"], "facts": summary_facts(s["key"], s["data"], w)}
         try:
             result = llm.call(business_id=report["business"]["id"], agent=AGENT, model=MODEL, prompt_version=PROMPT_VERSION,
                               system=system, messages=[{"role": "user", "content": json.dumps(payload)}],

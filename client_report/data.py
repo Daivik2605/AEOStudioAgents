@@ -26,6 +26,7 @@ from compare.run import CompareError, build_comparison
 from core import client_files
 from core.checkpoints import CHECKPOINTS
 from core.db import get_connection
+from core.businesses import get_engagement
 from core.evidence import list_evidence
 from core.timeline import collect_work
 from scoring import scoring
@@ -54,7 +55,8 @@ def _diagnoses(conn, business_id: str) -> list[dict]:
 def _diag_view(d: dict) -> dict:
     return {"id": d["id"], "checkpoint": d["checkpoint"], "date": d["checked_at"].astimezone(timezone.utc).date().isoformat(),
             "platform": d["platform"], "verdict": d["verdict"],
-            "findings": [{"code": f["code"], "severity": f["severity"], "what": f["what"]} for f in d["findings"]]}
+            "findings": [{"code": f["code"], "severity": f["severity"], "what": f["what"], "evidence": f.get("evidence")}
+                         for f in d["findings"]]}
 
 
 def _complete_runs(conn, business_id: str) -> list[dict]:
@@ -75,6 +77,26 @@ def _latest_by_checkpoint(diagnoses: list[dict], label: str) -> dict | None:
     return matching[-1] if matching else None
 
 
+def _enrich_comparison(cmp: dict, by_id: dict[str, dict]) -> dict:
+    """Adds what the client wording needs to each closed / still open / new finding of a diagnosis comparison:
+    the finding's own evidence text (for values like the name the website gave), the platform it was found on, and,
+    for a closed finding, whether the website platform changed between A and B ("Fixed by the new website").
+    `aeo compare` is not touched: this works on a copy."""
+    da, db = by_id.get(cmp["a"]["id"]), by_id.get(cmp["b"]["id"])
+    if not (da and db):
+        return cmp
+    ev_a = {f["code"]: f.get("evidence") for f in da["findings"]}
+    ev_b = {f["code"]: f.get("evidence") for f in db["findings"]}
+    # A change of platform counts only when BOTH are known: "unknown -> Wix" does not show a site was replaced.
+    replaced = bool(da["platform"] and db["platform"] and da["platform"] != db["platform"])
+    out = dict(cmp)
+    out["closed"] = [{**f, "evidence": ev_a.get(f["code"]), "platform": da["platform"], "site_replaced": replaced} for f in cmp["closed"]]
+    out["still_open"] = [{**f, "evidence": ev_b.get(f["code"]), "platform": db["platform"]} for f in cmp["still_open"]]
+    out["new"] = [{**f, "evidence": ev_b.get(f["code"]), "platform": db["platform"]} for f in cmp["new"]]
+    out["still_count"], out["new_count"] = len(cmp["still_open"]), len(cmp["new"])
+    return out
+
+
 # ---- sections ---------------------------------------------------------------------------------------------------------------
 
 def _health(conn, business: dict, diagnoses: list[dict], a: str | None, b: str | None, work: list[dict]) -> dict:
@@ -87,8 +109,9 @@ def _health(conn, business: dict, diagnoses: list[dict], a: str | None, b: str |
         da, db = _latest_by_checkpoint(diagnoses, pair[0]), _latest_by_checkpoint(diagnoses, pair[1])
         if da and db and da["id"] != db["id"]:
             until = db["checked_at"].astimezone(timezone.utc).date().isoformat()
-            out["comparison"] = {"a": _diag_view(da), "b": _diag_view(db), "labels": list(pair),
-                                 **compare_diagnoses(da, db, work, until)}
+            out["comparison"] = _enrich_comparison(
+                {"a": _diag_view(da), "b": _diag_view(db), "labels": list(pair), **compare_diagnoses(da, db, work, until)},
+                {d["id"]: d for d in diagnoses})
     return out
 
 
@@ -116,7 +139,7 @@ def _audit_today(conn, business: dict) -> dict:
     }
 
 
-def _recommendations(conn, business_id: str) -> dict:
+def _recommendations(conn, business_id: str, platform: str | None = None) -> dict:
     """The titles of the fixes in the latest `aeo recommend`, from the table it fills."""
     with conn.cursor() as cur:
         cur.execute("SELECT created_at, priority_fixes, fact_fixes, prioritised_by_audit FROM recommendations "
@@ -128,8 +151,10 @@ def _recommendations(conn, business_id: str) -> dict:
     order = ["access", "wrong_fact", "target_question", "finding", "hygiene"]
     fixes.sort(key=lambda f: (order.index(f["section"]), int(f["id"][1:])))
     return {"available": True, "date": r[0].astimezone(timezone.utc).date().isoformat(), "prioritised_by_audit": r[3],
+            "platform": platform,
             "fixes": [{"id": f["id"], "section": f["section"], "title": f["title"], "cannot_do": bool(f["cannot_do"]),
-                       "finding_code": f.get("finding_code")} for f in fixes]}
+                       "finding_code": f.get("finding_code"), "file": f.get("file"), "quote": f.get("quote"),
+                       "question": f.get("question")} for f in fixes]}
 
 
 def _evidence(conn, business: dict, clients_root: Path | None) -> list[dict]:
@@ -163,15 +188,17 @@ def _evidence(conn, business: dict, clients_root: Path | None) -> list[dict]:
 
 
 def _work(conn, business: dict, diagnoses: list[dict]) -> list[dict]:
-    what_for: dict[str, str] = {}
+    what_for: dict[str, dict] = {}
     for d in diagnoses:                       # the newest wording of each finding wins
         for f in d["findings"]:
-            what_for[f["code"]] = f["what"]
+            what_for[f["code"]] = {"what": f["what"], "evidence": f.get("evidence"), "platform": d["platform"]}
     out = []
     for w in collect_work(conn, business["id"]):
         code = w["details"].get("finding")
         out.append({"id": w["id"], "date": w["when"].astimezone(timezone.utc).date().isoformat(), "operator": w["operator"],
-                    "text": w["text"], "finding_code": code, "finding": what_for.get(code) if code else None,
+                    "text": w["text"], "finding_code": code, "finding": what_for[code]["what"] if code in what_for else None,
+                    "finding_evidence": what_for[code]["evidence"] if code in what_for else None,
+                    "finding_platform": what_for[code]["platform"] if code in what_for else None,
                     "checkpoint": w["details"].get("checkpoint")})
     return out
 
@@ -220,18 +247,25 @@ def collect(business: dict, stage: str, *, version: int, a: str | None = None, b
         work = _work(conn, business, diagnoses)
         entries = [{"date": w["date"], "operator": w["operator"], "text": w["text"], "finding": w["finding_code"]} for w in work]
         sections: list[dict] = []
+        label_dates: dict = {}
+        engagement = get_engagement(conn, business["id"])["engagement_type"]
 
         if stage == "starting_point":
             audit = _audit_today(conn, business)
+            if audit["available"]:
+                ai_sections = [
+                    {"key": "ai_today", "data": audit},
+                    {"key": "questions", "data": {"available": True, "design": audit["design"]["label"], "items": audit["questions"],
+                                                  "tags_recorded": audit["tags_recorded"], "version": audit["header"]["question_set_version"]}}]
+            else:       # no finished audit: ONE short section saying the measurement is next, not two empty ones
+                ai_sections = [{"key": "ai_next", "data": {}}]
             sections = [
                 {"key": "health", "data": _health(conn, business, diagnoses, a, b, entries)},
-                {"key": "ai_today", "data": audit},
-                {"key": "questions", "data": {"available": audit["available"], **({
-                    "design": audit["design"]["label"], "items": audit["questions"], "tags_recorded": audit["tags_recorded"],
-                    "version": audit["header"]["question_set_version"]} if audit["available"] else {})}},
-                {"key": "recommend", "data": _recommendations(conn, business["id"])},
+                *ai_sections,
+                {"key": "recommend", "data": _recommendations(conn, business["id"], diagnoses[-1]["platform"] if diagnoses else None)},
                 {"key": "evidence", "data": {"items": _evidence(conn, business, clients_root)}},
-                {"key": "promise", "data": {}},
+                # `audit` decides whether the sentence "what AI says" may be used (PLAN.md section 6): only with a finished audit.
+                {"key": "promise", "data": {"audit": audit["available"]}},
             ]
             labels = {"a": a or "", "b": b or ""}
         elif stage == "work_done":
@@ -250,8 +284,9 @@ def collect(business: dict, stage: str, *, version: int, a: str | None = None, b
                 comparison = build_comparison(business, label_a, label_b, **cmp_kw)
             except CompareError as exc:
                 raise ClientReportError(str(exc)) from exc
-            sections = _result_sections(comparison)
+            sections = _result_sections(comparison, diagnoses)
             labels = {"a": label_a, "b": label_b}
+            label_dates = _label_dates(comparison)
     finally:
         conn.close()
 
@@ -259,17 +294,30 @@ def collect(business: dict, stage: str, *, version: int, a: str | None = None, b
         "tool": {"name": "aeo client-report", "language": language},
         "stage": stage, "version": version, "generated_on": (today or date.today()).isoformat(),
         "business": {"id": business["id"], "name": business["name"], "domain": business["domain"]},
-        "labels": labels,
+        "labels": labels, "label_dates": label_dates, "engagement": engagement,
         "formula_version": scoring.formula_version(),
         "sections": [{"key": s["key"], "data": s["data"], "summary": None} for s in sections],
         "ai": {"used": False, "model": None, "calls": 0, "rejected": []},
     }
 
 
-def _result_sections(c: dict) -> list[dict]:
+def _label_dates(c: dict) -> dict:
+    """The day of side A and side B: the diagnosis date, or the audit's finish date when there is no diagnosis.
+    The client report needs it for "quarterly check on <date>"."""
+    out = {}
+    for side in ("a", "b"):
+        if c["diagnosis"]["available"]:
+            out[side] = c["diagnosis"][side]["date"]
+        elif c["audit"]["available"]:
+            out[side] = (c["audit"][side]["completed_at"] or "")[:10] or None
+    return {k: v for k, v in out.items() if v}
+
+
+def _result_sections(c: dict, diagnoses: list[dict]) -> list[dict]:
     """The sections of `results` and `check`, taken from the comparison's own data."""
     audit = c["audit"]
-    out = [{"key": "r_health", "data": c["diagnosis"]}]
+    diag = _enrich_comparison(c["diagnosis"], {d["id"]: d for d in diagnoses}) if c["diagnosis"]["available"] else c["diagnosis"]
+    out = [{"key": "r_health", "data": diag}]
     out.append({"key": "r_ai", "data": {**audit, "detection_floor": c["detection_floor"]}})
     out.append({"key": "r_targets", "data": audit["targets_vs_control"] if audit["available"] else {"available": False, "reason": audit["reason"]}})
     out.append({"key": "r_questions", "data": ({"available": True, "design": audit["design"]["label"], **audit["questions"],
