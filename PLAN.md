@@ -537,14 +537,14 @@ Now: Postgres in Docker on Daivik's Mac, files in `clients/` on the Mac. With th
 | 9 | Richer extraction (order, reasons, descriptors) + sources box — prompt v2 | ✅ Done (tested with fakes; first real run after the new site is live) |
 | 10 | **Fill-in file** + `aeo audit import` | ✅ Done (`--partial`, resumable) |
 | 11 | **Cost gate** on audit's AI calls | ✅ Done. Refuses with no person at the keyboard; no override flag (§3.2) |
-| | **Core path — build these first (decided 10 Oct 2026)** | |
+| | | **Core path — build these first (decided 10 Oct 2026). ✅ Complete 16 Oct 2026** | |
 | 13c | **Storage layout + engagement + evidence + work log** (§10, §2): `clients/<domain>/evidence\|generated`, fixed checkpoint labels, move O'land's files across, engagement type + access level on the business, `aeo evidence add/list`, `aeo log`, `aeo event`, `aeo timeline` | ✅ Done (migration 017). Evidence rows only from `aeo evidence add` / `aeo log --file`; raw page, filled sheet and migrated files are files only. `core/report_files.py` now unused |
 | 13 | **Truth document** — `aeo truth draft` (questionnaire pre-filled from the diagnosis) + `aeo truth import` (confirmed facts + story → new profile version). Replaces the v4.4 "client facts file" | ✅ Done (migration 018: `facts` + `story` on `business_profiles`, saved versions can't be edited or deleted). Follow-up: map confirmed facts into the columns the diagnose render check reads |
 | 15 | Audit report output (scores with ranges, share of voice, reasons, wrong facts) | ✅ Done. No AI; bootstrap ranges resample questions (seed in config.yaml); snapshot shows overall figures only; partial reports never save scores. Not yet seen on a real run |
 | 19 | **`aeo recommend`** — fix files (robots.txt, llms.txt, JSON-LD from confirmed facts only) + the ordered fix list with platform routing from data. No AI | ✅ Done (migration 019; two audit finding codes added). Follow-ups: ask for the address in parts (street, city, province, postal code) in the truth document so JSON-LD can use structured fields; merge `recommend/platforms.yaml` with `diagnose/platform_data.py`; store the CDN on the diagnosis instead of inferring it |
 | 19b | **Draft validator** — `aeo recommend check-draft`: mechanical citability checks + the one AI "distinctive" check behind the cost gate. Split out of 19 in v4.7 | |
 | 20 | **Compare** — moved up in v4.7. Any two checkpoints: diagnosis findings closed/open/new by code, audit numbers side by side | ✅ Done. Paired bootstrap; "real change" only when the range of the difference excludes zero; refuses mismatched question sets/designs; lists work and events in between. No AI, no DB write |
-| 22 | **Client report** — one designed HTML file (prints to PDF) per stage: starting point, work done, results, quarterly check. Python builds numbers and tables; AI writes only short summaries; only client-visible evidence; numbered versions; saves the data it used so it can be rebuilt identically | ⏭ Next |
+| 22 | **Client report** — one designed HTML file (prints to PDF) per stage: starting point, work done, results, quarterly check. Python builds numbers and tables; AI writes only short summaries; only client-visible evidence; numbered versions; saves the data it used so it can be rebuilt identically | ✅ Done. Data from the same functions as report/compare/recommend; AI summaries rejected if they contain a number not in the data or promise an outcome; `--no-ai`; `--from-json` rebuilds byte-identical. Not yet opened in a browser or printed |
 | | **After the core path** | |
 | 12 | **`aeo status`** — change status with a required reason (§7). The decline flow already tells people to use it | |
 | 13b | **`aeo questions draft`** — AI drafts candidate buyer questions from the truth document + diagnosis (§16); a person picks and freezes | |
@@ -610,6 +610,12 @@ aeo queue
 - Two `<h1>` tags, both apparently empty. 710 words on the homepage.
 - `openingHours: ", , , , , , "`. `sameAs` LinkedIn URL carries search tracking parameters. Three unlinked entity blocks.
 
+
+**O'land — open items before Audit 1 (16 Oct 2026).** Site-move work, logged under `after_site`, not AEO work:
+- **On hold:** add a sitemap to the Next.js site — none at `/sitemap.xml` on either host (404).
+- **Host split:** `olandstations.com` and `www.olandstations.com` both return 200. Pick one; 301 the other.
+- **Old-URL 404s:** 1,380 AI-crawler requests hit 404s in the week to 14 Oct (Cloudflare report, in evidence). Needs the list of failing paths, then 301s.
+- Then re-run `aeo diagnose … --checkpoint after_site`, write and freeze the 32 questions, fill the truth document with O'land, run Audit 1.
 ---
 
 ## 15. Later (decided, not now)

@@ -26,7 +26,7 @@ aeo = "aeo.cli:app"
 [tool.setuptools]
 # aeo/ is the command-line entry point; core/, scoring/, diagnose/, audit/ and truth/ are the
 # code behind it.
-packages = ["aeo", "core", "scoring", "diagnose", "audit", "truth", "recommend", "compare"]
+packages = ["aeo", "core", "scoring", "diagnose", "audit", "truth", "recommend", "compare", "client_report"]
 
 [tool.setuptools.package-data]
 scoring = ["config.yaml"]

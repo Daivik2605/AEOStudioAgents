@@ -259,6 +259,16 @@ def _wrong_facts(a: dict, b: dict) -> dict:
             "different_truth_documents": a["profile_version"] != b["profile_version"]}
 
 
+def _question_list(side: dict) -> dict:
+    """The whole question set, in the order it was asked, with the tags recorded when the run started."""
+    planned = side["started"].get("questions") or []
+    if planned:
+        return {"tags_recorded": True, "items": [{"number": i, "text": q["text"], "is_target": bool(q.get("is_target"))}
+                                                 for i, q in enumerate(planned, start=1)]}
+    return {"tags_recorded": False, "items": [{"number": i, "text": t, "is_target": False}
+                                              for i, t in enumerate(side["questions"], start=1)]}
+
+
 def compare_audits(a: dict, b: dict, domain: str, label_a: str, label_b: str) -> dict:
     check_comparable(a, b, label_a, label_b)
     with_accuracy = bool(a["facts"]) and bool(b["facts"])
@@ -266,6 +276,7 @@ def compare_audits(a: dict, b: dict, domain: str, label_a: str, label_b: str) ->
     return {
         "available": True, "reason": None,
         "design": {"label": label, "questions": len(a["questions"]), "engines": a["engines"], "repeats": a["repeats"]},
+        "questions": _question_list(a),
         "question_set": {"version": a["started"].get("question_set_version"),
                          "sha256": a["started"].get("question_set_sha256")},
         "a": _summary(a), "b": _summary(b),

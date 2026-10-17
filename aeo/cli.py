@@ -13,6 +13,7 @@ from audit.cost_gate import CostGateAborted
 from audit.fill_in import ImportRefused, generate_fill_in, import_fill_in
 from audit.manual import AuditError, run_manual_audit
 from audit.report import ReportError, make_report
+from client_report.run import ClientReportError, make_client_report, rebuild_from_json
 from compare.run import CompareError, make_comparison
 from recommend.run import RecommendError, make_recommendations
 from recommend.robots_file import TRAINING_MODES
@@ -369,6 +370,46 @@ def compare(
         typer.secho(f"{events} event(s) outside our control happened in between; the document flags them.", fg=typer.colors.YELLOW)
     typer.echo(f"Comparison: {made.md_path}")
     typer.echo(f"Data:       {made.json_path}")
+
+
+
+# ---- client report (PLAN.md step 22) -------------------------------------------------------------------------------
+
+@app.command("client-report")
+def client_report(
+    business: str = typer.Option(..., "--business", help="Business id, domain or name."),
+    stage: Optional[str] = typer.Option(None, "--stage", help="starting_point, work_done, results or check."),
+    a: Optional[str] = typer.Option(None, "--a", help="Earlier checkpoint to compare (results; or the health comparison in starting_point). " + CHECKPOINT_HELP),
+    b: Optional[str] = typer.Option(None, "--b", help="Later checkpoint to compare."),
+    no_ai: bool = typer.Option(False, "--no-ai", help="Skip the AI summaries. Nothing is spent."),
+    from_json: Optional[Path] = typer.Option(None, "--from-json", help="Rebuild the HTML from a saved .json. No data is gathered and no AI is used."),
+) -> None:
+    """Write the client report for one stage as a single HTML file. Never sends anything: a person reviews and sends it."""
+    bz = _find_business(business)
+    try:
+        if from_json is not None:
+            if stage or a or b:
+                _fail("--from-json rebuilds a saved report as it was; do not combine it with --stage, --a or --b")
+            made = rebuild_from_json(bz, from_json)
+            note = {True: "identical to the original", False: "DIFFERENT from the original (the original was left alone)",
+                    None: "the original HTML was missing, so it was recreated"}[made.identical_to_original]
+            typer.echo(f"Rebuilt from {from_json.name}: {note}.")
+            typer.echo(f"Report: {made.html_path}")
+            return
+        if stage is None:
+            _fail("--stage is required: starting_point, work_done, results or check")
+        made = make_client_report(bz, stage, a=a, b=b, no_ai=no_ai, ask=input, say=typer.echo)
+    except CostGateAborted:
+        typer.echo("Nothing was written. Run again and type yes, or add --no-ai.")
+        raise typer.Exit(1)
+    except ClientReportError as exc:
+        _fail(str(exc))
+    ai = made.data["ai"]
+    typer.echo(f"Client report ({stage}) for {bz['name'] or bz['domain']}, version {made.data['version']}.")
+    typer.echo("AI summaries: " + (f"{ai['calls'] - len(ai['rejected'])} of {ai['calls']} kept" if ai["used"] else "none (no AI used)") + ".")
+    typer.echo(f"Report: {made.html_path}")
+    typer.echo(f"Data:   {made.json_path}")
+    typer.echo("Nothing was sent. A person reads it first, then sends it.")
 
 
 # ---- engagement, evidence, work log, events, timeline (PLAN.md sections 2 and 10) -------------------------

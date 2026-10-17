@@ -41,17 +41,19 @@ def _diag_summary(d: dict) -> dict:
             "plan": d["plan"], "verdict": d["verdict"], "findings": len(d["findings"])}
 
 
-def make_comparison(business: dict, label_a: str, label_b: str, *, a_run: str | None = None, b_run: str | None = None,
-                    a_diagnosis: str | None = None, b_diagnosis: str | None = None,
-                    clients_root: Path | None = None, today: date | None = None) -> CompareResult:
+def build_comparison(business: dict, label_a: str, label_b: str, *, a_run: str | None = None, b_run: str | None = None,
+                     a_diagnosis: str | None = None, b_diagnosis: str | None = None,
+                     today: date | None = None, use_diagnosis: bool = True, use_audit: bool = True) -> dict:
+    """All the data of a comparison, nothing written. `aeo compare` writes it to files; the client report reads it
+    through this same function, so the two can never disagree."""
     check_checkpoint(label_a, required=True)
     check_checkpoint(label_b, required=True)
     conn = get_connection()
     try:
-        da = pick_diagnosis(conn, business["id"], label_a, a_diagnosis)
-        db = pick_diagnosis(conn, business["id"], label_b, b_diagnosis)
-        sa, why_a = load_side(conn, business["id"], label_a, a_run)
-        sb, why_b = load_side(conn, business["id"], label_b, b_run)
+        da = pick_diagnosis(conn, business["id"], label_a, a_diagnosis) if use_diagnosis else None
+        db = pick_diagnosis(conn, business["id"], label_b, b_diagnosis) if use_diagnosis else None
+        sa, why_a = load_side(conn, business["id"], label_a, a_run) if use_audit else (None, "not used")
+        sb, why_b = load_side(conn, business["id"], label_b, b_run) if use_audit else (None, "not used")
         entries = load_entries(conn, business["id"])
     finally:
         conn.close()
@@ -102,7 +104,15 @@ def make_comparison(business: dict, label_a: str, label_b: str, *, a_run: str | 
         "diagnosis": diagnosis, "audit": audit, "between": between_data,
     }
     text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
-    data = json.loads(text)            # the markdown is made from exactly what the .json holds
+    return json.loads(text)            # the markdown is made from exactly what the .json holds
+
+
+def make_comparison(business: dict, label_a: str, label_b: str, *, a_run: str | None = None, b_run: str | None = None,
+                    a_diagnosis: str | None = None, b_diagnosis: str | None = None,
+                    clients_root: Path | None = None, today: date | None = None) -> CompareResult:
+    data = build_comparison(business, label_a, label_b, a_run=a_run, b_run=b_run, a_diagnosis=a_diagnosis,
+                            b_diagnosis=b_diagnosis, today=today)
+    text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
     kind = f"compare_{label_a}_vs_{label_b}"
     _, paths = client_files.write_generated(
         client_files.generated_dir(business["domain"], clients_root), kind=kind, anchor_ext="md",

@@ -32,8 +32,8 @@ def estimated_cost(calls: int, model: str) -> float:
     return calls * estimate_cost(model, INPUT_TOKENS_PER_CALL, OUTPUT_TOKENS_PER_CALL)
 
 
-def card_lines(calls: int, model: str, *, claim_checks: int = 0) -> list[str]:
-    lines = [f"  AI extraction: {calls} calls · {model} · ~${estimated_cost(calls, model):.3f}"]
+def card_lines(calls: int, model: str, *, claim_checks: int = 0, label: str = "AI extraction") -> list[str]:
+    lines = [f"  {label}: {calls} calls · {model} · ~${estimated_cost(calls, model):.3f}"]
     if claim_checks:
         lines.append(f"  Plus up to {claim_checks} claim checks (this business has confirmed facts) "
                      f"· {model} · ~${estimated_cost(claim_checks, model):.3f}")
@@ -41,7 +41,7 @@ def card_lines(calls: int, model: str, *, claim_checks: int = 0) -> list[str]:
 
 
 def confirm_cost(calls: int, *, model: str, claim_checks: int = 0,
-                 ask: Callable[[str], str], say: Callable[[str], None]) -> None:
+                 ask: Callable[[str], str], say: Callable[[str], None], label: str = "AI extraction") -> None:
     """Prints the cost card, then asks for `yes`. Anything else raises CostGateAborted.
 
     With no terminal on stdin (piped or scheduled) the card is still printed, for the log, then
@@ -50,7 +50,7 @@ def confirm_cost(calls: int, *, model: str, claim_checks: int = 0,
     """
     if calls <= 0:
         return                                   # nothing to read, nothing to pay for
-    for line in card_lines(calls, model, claim_checks=claim_checks):
+    for line in card_lines(calls, model, claim_checks=claim_checks, label=label):
         say(line)
     if not stdin_is_tty():
         say(NO_TERMINAL_MESSAGE)
