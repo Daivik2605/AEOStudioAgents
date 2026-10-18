@@ -1,6 +1,6 @@
 # AEOStudioAgents — Plan
 
-**Version 4.7 · 14 October 2026.** Changes since 4.5 are in the changelog at the end.
+**Version 4.8 · 18 October 2026.** Changes since 4.5 are in the changelog at the end.
 
 Read this file before doing anything in this repository. It is the source of truth. When a decision is not covered here, ask rather than assume.
 
@@ -374,6 +374,20 @@ Every score stores its `formula_version`. Weights and tiers in `scoring/config.y
 
 One versioned set, written **before** looking at where the client appears. Never edited — a change means a new version with an annotation. Every checkpoint reuses it. Paraphrasing a question changes the answer set more than re-asking it does, so the question string is part of the measurement.
 
+### Two kinds of question, never mixed (v4.8)
+
+- **Discovery questions** — the buyer has never heard of the client: "water station rental for a festival in Toronto". The brand never appears (rejected in code). These, and only these, measure visibility, recommendation rate, share of voice and gap.
+- **Brand questions** — the buyer already knows the name: "What does O'land Stations do?", or with the URL: "Tell me about olandstations.com". These measure **recognition** (does AI know them?) and **accuracy** (does it get the facts right?). Putting them into visibility would inflate it — AI always "names" a business you asked about by name.
+
+**How questions are written:**
+- In the buyer's words, not the client's slogans. Vary the vocabulary buyers actually use (water station / refill station / hydration station / bottle filling station).
+- One ask per question. No private information, ever.
+- Three lengths, tagged: **short** (3–6 words, search-box style), **medium** (one conversational sentence), **long** (2–3 sentences of a real situation: place, size, date, constraint). Small specialists tend to win or lose on the long, specific ones; adding one qualifier changes most of the brands named.
+- Built from personas × places × needs (rent vs buy, branding, scale, sustainability, price). Places the client actually serves, including outside their home city.
+- In the buyer's language: French for Quebec buyers.
+- A few informational questions, untouched by our work, act as the control.
+- Rough mix for a 32-question set: ~24 discovery (≈30% short, 45% medium, 25% long), ~8 brand (half with the URL).
+
 ### What is deterministic, and therefore our strongest proof
 
 The **diagnosis findings diff**. Same input, same answer, no sampling. "Eight of eleven findings closed" needs no confidence interval.
@@ -478,6 +492,33 @@ O'land's existing data moves across: `old_site` → `before`, `new_site_no_aeo` 
 
 `aeo log` records each piece of work done for the client (dated, who, optional finding code it closes, optional file). `aeo event` records things outside our control that can move the numbers: the client changed their own site, an engine shipped a new model, the client approved something. Both feed the client report and the timeline.
 
+### The baseline dossier (v4.8) — internal, assembled before any work
+
+One internal document per client, regenerated whenever new evidence arrives, so we always know what stage they are at. Sections:
+1. **Business snapshot** — what they sell, to whom, where; public facts from their site; confirmed facts from the truth document; claims that need checking.
+2. **Stage** — engagement type, access level, what's done, what's open.
+3. **How AI sees the site — before and after** — for each diagnosis: what a bot can reach, the words it actually reads (from `raw_page.html`), the structured data it finds (verbatim), what is missing. Old site and new site side by side.
+4. **Crawler activity** — AI bots allowed / blocked / erroring, 404s, most-requested paths (CDN or host report).
+5. **Search and traffic** — 6 months of organic search (Search Console: clicks, impressions, top queries), visits from AI assistants (Analytics referrals: chatgpt.com, perplexity.ai, copilot, gemini), Copilot citations and the searches it ran (Bing Webmaster Tools AI Performance). No engine publishes how many people asked about a business; we never imply otherwise.
+6. **What AI says today** — a **spot check**: brand questions run once on each engine, full answers kept. Labelled as a snapshot, not a measurement.
+7. **Problems** — one ranked list across all of the above.
+8. **Proposed question set** — discovery + brand, tagged, not yet frozen.
+9. **Questions for the client** and **what happens next**.
+
+### Evidence catalogue — what we collect for every client
+
+| Evidence | Source | Needs | Each checkpoint? |
+|---|---|---|---|
+| Diagnosis + raw page + structured data | our tool | nothing | yes |
+| AI crawler report | Cloudflare / host / CDN | hosting access or client screenshot | yes |
+| Organic search, 6 months | Google Search Console export | client grants access | yes |
+| Site traffic incl. AI referrals | Google Analytics (or the builder's analytics) | client grants access | yes |
+| Copilot citations + grounding queries | Bing Webmaster Tools AI Performance | site verified (DNS, meta tag or GSC import) | yes |
+| AI spot check (brand questions) | ChatGPT, Perplexity, Gemini, Copilot — logged out | nothing | at start, then in each audit |
+| Full audit answers | our audit | the frozen set | yes |
+| Screenshots of AI answers | us | nothing | when notable |
+| Client confirmations, approvals | email | — | as they happen |
+
 ### Long run
 
 Now: Postgres in Docker on Daivik's Mac, files in `clients/` on the Mac. With the frontend: the database moves to Supabase and `evidence/` + `generated/` move to object storage (Supabase Storage or Cloudflare R2), same layout. **Only the database and `evidence/` need backing up** — `generated/` can always be rebuilt.
@@ -546,6 +587,9 @@ Now: Postgres in Docker on Daivik's Mac, files in `clients/` on the Mac. With th
 | 20 | **Compare** — moved up in v4.7. Any two checkpoints: diagnosis findings closed/open/new by code, audit numbers side by side | ✅ Done. Paired bootstrap; "real change" only when the range of the difference excludes zero; refuses mismatched question sets/designs; lists work and events in between. No AI, no DB write |
 | 22 | **Client report** — one designed HTML file (prints to PDF) per stage: starting point, work done, results, quarterly check. Python builds numbers and tables; AI writes only short summaries; only client-visible evidence; numbered versions; saves the data it used so it can be rebuilt identically | ✅ Done. Data from the same functions as report/compare/recommend; AI summaries rejected if they contain a number not in the data or promise an outcome; `--no-ai`; `--from-json` rebuilds byte-identical. Not yet opened in a browser or printed |
 | 22b | **Client wording** — client sentence + fix title for every finding code, plain checkpoint/platform/evidence labels, "Fixed by the new website", honest "N of M closed · K new" headline, §6 sentence only when an audit backs it, no forced page breaks | ✅ Done. Not yet seen on O'land's real report |
+| 22c | **Honest "closed"** — a finding whose subject no longer exists is not "closed". When B has no structured data, every schema finding from A is "gone with the old structured data — not yet replaced", not "fixed". Each finding code declares what it depends on (e.g. all `SCHEMA_*` depend on JSON-LD existing). Compare, client report and timeline use three outcomes: fixed · no longer applies (subject removed) · still open. O'land's "8 of 9 closed" is really 2 fixed, 6 removed with the old schema | ⏭ Next |
+| 22d | **Two kinds of question** (§8): every question is `discovery` (brand-free — the buyer doesn't know the client) or `brand` (names the client, with or without the URL). Visibility, recommendation rate, share of voice and gap are computed on **discovery questions only**; brand questions feed recognition and accuracy only. Each question also carries `length` (short · medium · long) and `language`. Reports show results by length and language | |
+| 22e | **Baseline dossier** — `aeo dossier --business <b>`: the internal, before-work document (§10). Everything we know before work starts, assembled from the database and evidence; gaps listed as "not yet collected" | |
 | | **After the core path** | |
 | 12 | **`aeo status`** — change status with a required reason (§7). The decline flow already tells people to use it | |
 | 13b | **`aeo questions draft`** — AI drafts candidate buyer questions from the truth document + diagnosis (§16); a person picks and freezes | |
@@ -701,5 +745,7 @@ Every journal entry records the person, not the script: `AEO_OPERATOR=daivik` (o
 - **10 Oct 2026 — v4.6.** Step 11 (cost gate) done: refuses with no person at the keyboard, no override flag (§3.2). Build order split into a core path (13 truth document → 15 audit report → 19 recommend) and everything else after. Question sets written by hand for now.
 
 - **14 Oct 2026 — v4.7.** Storage rewritten (§10): the database is the record; files are **evidence** (kept forever) or **generated** (rebuildable), in `clients/<domain>/evidence|generated`, date-named, no stage folders. Checkpoints become four fixed labels for every client — `before` · `after_site` · `after_aeo` · `check`; O'land's `old_site` → `before`, `new_site_no_aeo` → `after_site`. Engagement types A–F and access level added (§2). Evidence records with eight fields and a client-visible flag; `aeo log`, `aeo event`, `aeo timeline`. Core path now: **13c storage/evidence/work log (first, so everything after writes into the new layout)** → truth document → audit report → recommend → **compare (moved up)** → **client report (new)**. Later: explain budget, `aeo next` + checklist, CDN detection + migration redirect check, AEO Studio Coach.
+
+- **18 Oct 2026 — v4.8.** Found on O'land's first real client report: "8 of 9 closed" counted six structured-data findings as closed because the new site has no structured data at all — new step 22c separates fixed from no-longer-applies. Two kinds of question (§8): discovery vs brand, never mixed; visibility on discovery only; length and language tagged (22d). Baseline dossier and evidence catalogue (§10, step 22e). Writing rules for questions.
 
 *Changes to this plan are deliberate and dated.*
