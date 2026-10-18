@@ -140,8 +140,8 @@ def test_starting_point_sections(starting, tmp_path):
     for h in ("How healthy your website is for AI tools", "Where AI stands today", "The questions we asked", "What we recommend", "Evidence", "What we can and cannot do"):
         assert f"<h2>{h}</h2>" in page
     health = section(res, "health")["data"]
-    assert health["comparison"]["labels"] == ["before", "after_site"] and health["comparison"]["headline"] == "2 of 3 findings closed"
-    assert "2 of 3 closed · 1 new" in page                        # the client headline always counts the new finding
+    assert health["comparison"]["labels"] == ["before", "after_site"] and health["comparison"]["headline"] == "2 fixed · 0 no longer apply · 1 still open · 1 new"
+    assert "2 fixed · 0 no longer apply · 1 still open · 1 new" in page                        # the client headline always counts the new finding
     assert section(res, "ai_today")["data"]["available"] and section(res, "recommend")["data"]["available"]
 
 
@@ -217,7 +217,7 @@ def test_results_sections(small_pair, tmp_path):
     assert keys(res) == ["r_health", "r_ai", "r_targets", "r_questions", "r_voice", "r_facts", "r_sources", "r_between"]
     assert res.data["labels"] == {"a": "before", "b": "after_aeo"}
     page = html_of(res)
-    assert "1 of 2 closed" in page and "findings closed" not in page and "Rewrote the services page" in page
+    assert "1 fixed · 0 no longer apply · 1 still open · 0 new" in page and "findings closed" not in page and "Rewrote the services page" in page
     assert "<span class='tag event'>Outside our control</span>" in page and "outside our control happened in this period" in page
 
 

@@ -1,9 +1,14 @@
-"""The diagnosis comparison: findings by code, closed / still open / new (PLAN.md section 8, "what is deterministic").
+"""The diagnosis comparison: findings by code, with four outcomes (PLAN.md section 8, "what is deterministic", and step 22c):
+  fixed             in A, not in B, and what it was about still exists
+  no longer applies in A, not in B, but what it was about was removed (the old structured data, for example)
+  still open        in both
+  new               in B, not in A
 Same input, same answer, no sampling, so no range is needed or shown."""
 
 from __future__ import annotations
 
 from compare.errors import CompareError
+from diagnose.codes import subject_removed_by
 
 SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 COLUMNS = "id, checkpoint, checked_at, platform, platform_plan, verdict, findings, url, business_id"
@@ -40,6 +45,14 @@ def _sorted(items: list[dict]) -> list[dict]:
     return sorted(items, key=lambda i: (SEVERITY_RANK.get(i["severity"], 9), i["code"]))
 
 
+def headline_text(fixed: int, gone: int, still: int, new: int, total: int) -> str:
+    """'2 fixed · 6 no longer apply · 1 still open · 1 new'. All four are always shown, so nothing is hidden."""
+    if total == 0:
+        return f"A had no findings, so there was nothing to fix · {new} new"
+    verb = "no longer applies" if gone == 1 else "no longer apply"
+    return f"{fixed} fixed · {gone} {verb} · {still} still open · {new} new"
+
+
 def compare_diagnoses(a: dict, b: dict, work: list[dict], until: str) -> dict:
     """`work` are the work-log entries ({date, operator, text, finding, ...}); `until` is the last day (ISO) a
     work entry can count toward B."""
@@ -49,8 +62,19 @@ def compare_diagnoses(a: dict, b: dict, work: list[dict], until: str) -> dict:
         return [{"date": w["date"], "operator": w["operator"], "text": w["text"]}
                 for w in work if w["finding"] == code and w["date"] <= until]
 
-    closed = _sorted([{"code": c, "severity": fa[c]["severity"], "what": fa[c]["what"], "work": work_for(c)}
-                      for c in fa if c not in fb])
+    later_codes = set(fb)
+    fixed, gone = [], []
+    for c in fa:
+        if c in fb:
+            continue
+        item = {"code": c, "severity": fa[c]["severity"], "what": fa[c]["what"], "work": work_for(c)}
+        removed_by = subject_removed_by(c, later_codes)
+        if removed_by:      # its subject is gone: say what replaced it, and do not call it fixed
+            gone.append({**item, "outcome": "no_longer_applies",
+                         "replaced_by": [{"code": r, "severity": fb[r]["severity"], "what": fb[r]["what"]} for r in removed_by]})
+        else:
+            fixed.append({**item, "outcome": "fixed"})
+    fixed, gone = _sorted(fixed), _sorted(gone)
     still = _sorted([{"code": c, "severity": fb[c]["severity"], "severity_in_a": fa[c]["severity"],
                       "what": fb[c]["what"], "work": work_for(c)} for c in fa if c in fb])
     new = _sorted([{"code": c, "severity": fb[c]["severity"], "what": fb[c]["what"]} for c in fb if c not in fa])
@@ -62,12 +86,15 @@ def compare_diagnoses(a: dict, b: dict, work: list[dict], until: str) -> dict:
     for code in ("CRAWLER_TEST_INCONCLUSIVE", "ROBOTS_TXT_UNREACHABLE"):
         if code in fb and code not in fa:
             caveats.append(f"B has {code}: its crawler and robots.txt checks did not complete, "
-                           "so findings from those checks that are missing from B cannot be called closed.")
+                           "so findings from those checks that are missing from B cannot be called fixed.")
     total = len(fa)
     return {
-        "headline": (f"{len(closed)} of {total} findings closed" if total else "A had no findings, so nothing could close"),
-        "closed_count": len(closed), "a_total": total, "b_total": len(fb),
-        "closed": closed, "still_open": still, "new": new,
+        "headline": headline_text(len(fixed), len(gone), len(still), len(new), total),
+        "fixed_count": len(fixed), "no_longer_applies_count": len(gone), "still_open_count": len(still), "new_count": len(new),
+        "closed_count": len(fixed), "a_total": total, "b_total": len(fb),
+        # `closed` is the same list as `fixed`. The name is kept so older readers and saved files still work; it no longer
+        # contains findings whose subject was removed.
+        "fixed": fixed, "closed": fixed, "no_longer_applies": gone, "still_open": still, "new": new,
         "platform": change("platform"), "plan": change("plan"), "verdict": change("verdict"),
         "caveats": caveats,
     }

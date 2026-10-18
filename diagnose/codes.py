@@ -70,6 +70,38 @@ REGISTRY: dict[str, str] = {
     "AUDIT_TARGET_QUESTION_GAP": "medium",    # a target question where competitors are named and the client is not
 }
 
+# ---- what a finding is ABOUT (PLAN.md step 22c) -------------------------------------------------------------
+# Some findings describe the content of something that can disappear. When the old structured data is gone and the
+# new site has none at all, "name is the legal entity" is not FIXED: there is no name left to be wrong. It no longer
+# applies, and what replaced it ("no structured data at all") still needs doing.
+#   subject    a short key for the thing the finding is about
+#   gone_when  finding codes which, if present in the LATER diagnosis, say that the subject no longer exists
+# A code that is not listed here has no such dependency: when it disappears, it is fixed.
+DEPENDS_ON: dict[str, dict[str, Any]] = {
+    # every code that reads the CONTENT of JSON-LD needs JSON-LD to exist (SCHEMA_NONE_FOUND says it does not)
+    "SCHEMA_INVALID_JSON": {"subject": "structured_data", "gone_when": ("SCHEMA_NONE_FOUND",)},
+    "SCHEMA_NAME_IS_LEGAL_ENTITY": {"subject": "structured_data", "gone_when": ("SCHEMA_NONE_FOUND",)},
+    "SCHEMA_ORG_MISSING_NAME": {"subject": "structured_data", "gone_when": ("SCHEMA_NONE_FOUND",)},
+    "SCHEMA_LOCALBUSINESS_NO_AREASERVED": {"subject": "structured_data", "gone_when": ("SCHEMA_NONE_FOUND",)},
+    "SCHEMA_OPENING_HOURS_EMPTY": {"subject": "structured_data", "gone_when": ("SCHEMA_NONE_FOUND",)},
+    "SCHEMA_SAMEAS_HAS_TRACKING_PARAMS": {"subject": "structured_data", "gone_when": ("SCHEMA_NONE_FOUND",)},
+    "SCHEMA_ENTITIES_UNLINKED": {"subject": "structured_data", "gone_when": ("SCHEMA_NONE_FOUND",)},
+    # "empty" and "more than one" main heading are about headings that exist; "no main heading at all" removes them
+    "RENDER_H1_EMPTY": {"subject": "main_heading", "gone_when": ("RENDER_H1_MISSING",)},
+    "RENDER_H1_MULTIPLE": {"subject": "main_heading", "gone_when": ("RENDER_H1_MISSING",)},
+}
+
+# Codes that inspect the content of JSON-LD (every SCHEMA_ code except the one that says there is none).
+# A test fails if one of these is missing from DEPENDS_ON.
+JSONLD_CONTENT_CODES = tuple(c for c in REGISTRY if c.startswith("SCHEMA_") and c != "SCHEMA_NONE_FOUND")
+
+
+def subject_removed_by(code: str, later_codes: set[str]) -> list[str]:
+    """The codes in the later diagnosis that show this finding's subject no longer exists ([] if it still does,
+    or if the code has no declared dependency)."""
+    dep = DEPENDS_ON.get(code)
+    return [c for c in dep["gone_when"] if c in later_codes] if dep else []
+
 
 def make_finding(
     code: str,

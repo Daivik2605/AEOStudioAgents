@@ -43,7 +43,7 @@ def _render_diagnosis(d: dict, la: str, lb: str) -> list[str]:
         return out + [f"Not available: {d['reason']}.", ""]
     out += ["Findings are matched by their code. This part is deterministic: the same input gives the same answer every time, "
             "so it needs no range.", "",
-            f"**{d['headline']}.** ({d['b_total']} open in {lb}.)", ""]
+            f"**{d['headline']}.** ({d['b_total']} finding(s) in {lb}.)", ""]
     for c in d["caveats"]:
         out += [f"> **Caution:** {_oneline(c)}", ""]
     out += ["| | A: " + la + " | B: " + lb + " |", "|---|---|---|",
@@ -63,8 +63,17 @@ def _render_diagnosis(d: dict, la: str, lb: str) -> list[str]:
                 lines.append(f"  - {none_logged}")
         return lines or ["None."]
 
-    out += [f"### Closed ({len(d['closed'])})", "", "In A, not in B.", ""]
-    out += finding_lines(d["closed"], none_logged="no work-log entry carries this code (it may have closed on its own, or the work was not logged)")
+    out += [f"### Fixed ({len(d['fixed'])})", "", "In A, not in B, and what the finding was about still exists in B.", ""]
+    out += finding_lines(d["fixed"], none_logged="no work-log entry carries this code (it may have been fixed on its own, or the work was not logged)")
+    out += ["", f"### No longer applies ({len(d['no_longer_applies'])})", "",
+            "In A, not in B, but what the finding was about was removed. These were NOT fixed: they went away with it, "
+            "and what replaced it is shown under each.", ""]
+    gone_lines = []
+    for c in d["no_longer_applies"]:
+        gone_lines.append(f"- `{c['code']}` ({c['severity']}): {_oneline(c['what'])}")
+        gone_lines += [f"  - replaced by `{r['code']}` ({r['severity']}) in B: {_oneline(r['what'])}" for r in c["replaced_by"]]
+        gone_lines += [f"  - work logged: {_oneline(w['text'])} ({w['date']}, by {w['operator']})" for w in c.get("work", [])]
+    out += gone_lines or ["None."]
     out += ["", f"### Still open ({len(d['still_open'])})", "", "In both. Any work logged against them is shown: logged as done, but still open.", ""]
     out += finding_lines(d["still_open"], show_was=True)
     out += ["", f"### New ({len(d['new'])})", "", "In B, not in A.", ""]

@@ -133,7 +133,7 @@ def test_findings_are_grouped_closed_still_open_and_new(biz, tmp_path):
     assert [c["code"] for c in d["closed"]] == ["CRAWLER_BLOCKED_OAI_SEARCHBOT", "RENDER_H1_MISSING", "LLMS_TXT_MISSING"]   # by severity
     assert [c["code"] for c in d["still_open"]] == ["SCHEMA_NONE_FOUND"]
     assert [c["code"] for c in d["new"]] == ["RENDER_PHONE_MISSING", "ROBOTS_TXT_SERVED_AS_HTML"]
-    assert d["headline"] == "3 of 4 findings closed" and d["a_total"] == 4 and d["b_total"] == 3
+    assert d["headline"] == "3 fixed · 0 no longer apply · 1 still open · 2 new" and d["a_total"] == 4 and d["b_total"] == 3
     assert [c["severity"] for c in d["closed"]] == ["high", "medium", "low"]
     assert d["still_open"][0]["severity"] == "high" and d["still_open"][0]["severity_in_a"] == "medium"
 
@@ -181,14 +181,14 @@ def test_a_caution_when_b_could_not_run_the_crawler_checks(biz, tmp_path):
     add_diagnosis(biz, "before", [finding("CRAWLER_BLOCKED_OAI_SEARCHBOT", "high")], when=NOW - timedelta(days=5))
     add_diagnosis(biz, "check", [finding("CRAWLER_TEST_INCONCLUSIVE", "medium")], when=NOW + timedelta(days=5))
     d = compare(biz, tmp_path, "before", "check").data["diagnosis"]
-    assert d["caveats"] and "cannot be called closed" in d["caveats"][0]
+    assert d["caveats"] and "cannot be called fixed" in d["caveats"][0]
 
 
 def test_a_diagnosis_can_be_chosen_by_id(biz, tmp_path):
     old = add_diagnosis(biz, "check", [finding("RENDER_H1_MISSING", "medium")], when=NOW - timedelta(days=20))
     new = add_diagnosis(biz, "check", [], when=NOW + timedelta(days=1))
     d = compare(biz, tmp_path, "check", "check", a_diagnosis=old, b_diagnosis=new).data["diagnosis"]
-    assert d["a"]["id"] == old and d["b"]["id"] == new and d["headline"] == "1 of 1 findings closed"
+    assert d["a"]["id"] == old and d["b"]["id"] == new and d["headline"] == "1 fixed · 0 no longer apply · 0 still open · 0 new"
 
 
 def test_the_same_label_twice_without_choosing_is_refused(biz, tmp_path):
@@ -212,7 +212,7 @@ def test_diagnosis_only_works_when_no_audit_exists(biz, tmp_path):
     assert res.data["audit"]["available"] is False and "no audit run at checkpoint 'before'" in res.data["audit"]["reason"]
     assert res.data["diagnosis"]["available"] is True
     md = res.md_path.read_text()
-    assert "3 of 4 findings closed" in md and "## 2. Audit comparison\n\nNot available" in md
+    assert "3 fixed · 0 no longer apply · 1 still open · 2 new" in md and "## 2. Audit comparison\n\nNot available" in md
 
 
 def test_audit_only_works_when_no_diagnosis_exists(pair, tmp_path):
@@ -581,7 +581,7 @@ def test_the_command_prints_the_headlines(pair, tmp_path):
     diag_pair(pair)
     result = CliRunner().invoke(cli.app, ["compare", "before", "after_aeo", "--business", pair["domain"]])
     assert result.exit_code == 0, result.output
-    assert "3 of 4 findings closed" in result.output and "real change" in result.output
+    assert "3 fixed · 0 no longer apply · 1 still open · 2 new" in result.output and "real change" in result.output
     assert "detects roughly a 20-point change" in result.output
 
 

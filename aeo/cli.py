@@ -13,6 +13,7 @@ from audit.cost_gate import CostGateAborted
 from audit.fill_in import ImportRefused, generate_fill_in, import_fill_in
 from audit.manual import AuditError, run_manual_audit
 from audit.report import ReportError, make_report
+from dossier.run import DossierError, make_dossier
 from client_report.run import ClientReportError, make_client_report, rebuild_from_json
 from compare.run import CompareError, make_comparison
 from recommend.run import RecommendError, make_recommendations
@@ -412,6 +413,33 @@ def client_report(
     typer.echo("Nothing was sent. A person reads it first, then sends it.")
 
 
+# ---- baseline dossier (PLAN.md step 22e) ----------------------------------------------------------------------------
+
+@app.command()
+def dossier(
+    business: str = typer.Option(..., "--business", help="Business id, domain or name."),
+    questions: Optional[Path] = typer.Option(None, "--questions", help="A proposed question set (YAML). Default: the latest one an audit used."),
+) -> None:
+    """Write the internal baseline dossier (.md, .html, .json). No AI. Never shown to the client."""
+    bz = _find_business(business)
+    try:
+        made = make_dossier(bz, questions=questions)
+    except DossierError as exc:
+        _fail(str(exc))
+    d = made.data
+    typer.echo(f"Dossier version {d['version']} for {bz['name'] or bz['domain']}. INTERNAL: do not send it to the client.")
+    if made.notes_created:
+        typer.echo(f"Created the notes file: {made.notes_path}  (write your notes under its headings; it is never overwritten)")
+    for w in made.warnings:
+        typer.echo(f"WARNING: {w}")
+    for s in d["sections"]:
+        if s["key"] in ("next", "problems"):
+            typer.echo(f"{s['title']}: {s['answer']}")
+    typer.echo(f"Document: {made.md_path}")
+    typer.echo(f"Web page: {made.html_path}")
+    typer.echo(f"Data:     {made.json_path}")
+
+
 # ---- engagement, evidence, work log, events, timeline (PLAN.md sections 2 and 10) -------------------------
 
 @app.command()
@@ -452,7 +480,7 @@ def evidence_add(
     business: str = typer.Option(..., "--business", help="Business id, domain or name."),
     checkpoint: Optional[str] = typer.Option(None, "--checkpoint", help=CHECKPOINT_HELP + " Required."),
     note: str = typer.Option(..., "--note", help="What we understood from it."),
-    evidence_type: Optional[str] = typer.Option(None, "--type", help="e.g. cdn_report, ai_answer_screenshot, client_email."),
+    evidence_type: Optional[str] = typer.Option(None, "--type", help="e.g. " + ", ".join(ev.EVIDENCE_TYPES) + ". Other names are allowed."),
     source: Optional[str] = typer.Option(None, "--from", help="us or client."),
     captured: Optional[str] = typer.Option(None, "--captured", help="Date it was captured, YYYY-MM-DD."),
     period_start: Optional[str] = typer.Option(None, "--period-start", help="First day the evidence covers, YYYY-MM-DD."),

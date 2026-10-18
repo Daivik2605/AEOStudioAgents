@@ -138,7 +138,17 @@ def _health_comparison(c: Ctx, d: dict) -> str:
                 line += f"<br><span class='small'>{E(c.t('health.fixed_by_new_site'))}</span>"
             lis.append(line)
         return bullet(lis) or f"<p>{E(c.t('health.none_listed'))}</p>"
-    out += [f"<h3>{E(c.t('health.closed', n=len(d['closed'])))}</h3>", items(d["closed"], True),
+    fixed = d["fixed"] if "fixed" in d else d["closed"]
+    gone = d.get("no_longer_applies") or []
+    out += [f"<h3>{E(c.t('health.closed', n=len(fixed)))}</h3>", items(fixed, True)]
+    if gone:        # not fixed: removed with the old website, and still to be redone
+        lis = []
+        for f in gone:
+            line = f"<strong>{E(c.t('severity.' + f['severity']))}.</strong> {E(_finding_text(c, f, None))}"
+            line += "".join(f"<br><span class='small'>{E(c.t('health.nla_now', text=_finding_text(c, r, None)))}</span>" for r in f["replaced_by"])
+            lis.append(line)
+        out += [f"<h3>{E(c.t('health.nla', n=len(gone)))}</h3>", f"<p class='small'>{E(c.t('health.nla_note'))}</p>", bullet(lis)]
+    out += [
             f"<h3>{E(c.t('health.still', n=len(d['still_open'])))}</h3>", items(d["still_open"], True),
             f"<h3>{E(c.t('health.new', n=len(d['new'])))}</h3>", items(d["new"], False)]
     return "".join(out)

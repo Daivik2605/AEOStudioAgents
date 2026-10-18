@@ -82,13 +82,15 @@ class Words:
         return self.t("health.verdict_short." + v) if v and self.has("health.verdict_short." + v) else "-"
 
     def headline(self, d: dict) -> str:
-        """'8 of 9 closed · 1 new'. New findings are always part of the headline."""
-        closed, total, new = len(d["closed"]), d["a_total"], len(d["new"])
-        if total == 0:
+        """'2 fixed · 6 no longer apply · 1 still open · 1 new'. All four are always shown. A saved file from before
+        step 22c has no `fixed` / `no_longer_applies`: its `closed` list was all findings that were gone."""
+        fixed = len(d["fixed"] if "fixed" in d else d["closed"])
+        gone = len(d.get("no_longer_applies") or [])
+        still, new = len(d["still_open"]), len(d["new"])
+        if d["a_total"] == 0:
             return self.t("health.headline.none_new", new=new) if new else self.t("health.headline.none")
-        if new:
-            return self.t("health.headline.closed_new", closed=closed, total=total, new=new)
-        return self.t("health.headline.closed", closed=closed, total=total)
+        key = "health.headline.outcomes_one" if gone == 1 else "health.headline.outcomes"
+        return self.t(key, fixed=fixed, gone=gone, still=still, new=new)
 
     # ---- findings and fixes --------------------------------------------------------------------------------------
     def finding(self, finding: dict, platform: str | None = None) -> str:

@@ -239,21 +239,25 @@ def test_the_headline_counts_the_new_finding(biz, tmp_path):
     add_diagnosis(biz, "after_site", [finding("LLMS_TXT_MISSING", "low"), finding("SCHEMA_OPENING_HOURS_EMPTY", "low")],
                   when=NOW - timedelta(days=2))
     page = closed_text(make(biz, tmp_path, "starting_point"))
-    assert "8 of 9 closed · 1 new" in page and "findings closed" not in page
+    assert "8 fixed · 0 no longer apply · 1 still open · 1 new" in page and "findings closed" not in page
 
 
-def test_the_headline_has_no_new_part_when_nothing_is_new(biz):
+def test_the_headline_always_shows_all_four_counts(biz):
     w = words_for(biz)
-    assert w.headline({"closed": [1] * 8, "new": [], "a_total": 9}) == "8 of 9 closed"
-    assert w.headline({"closed": [1] * 8, "new": [1, 2], "a_total": 9}) == "8 of 9 closed · 2 new"
-    assert w.headline({"closed": [], "new": [1], "a_total": 0}) == "Nothing to close from the earlier check · 1 new"
-    assert w.headline({"closed": [], "new": [], "a_total": 0}) == "Nothing to close from the earlier check"
+    d = {"fixed": [1] * 2, "no_longer_applies": [1] * 6, "still_open": [1], "new": [1], "closed": [], "a_total": 9}
+    assert w.headline(d) == "2 fixed · 6 no longer apply · 1 still open · 1 new"
+    assert w.headline({**d, "no_longer_applies": [1]}) == "2 fixed · 1 no longer applies · 1 still open · 1 new"
+    assert w.headline({**d, "new": []}) == "2 fixed · 6 no longer apply · 1 still open · 0 new"
+    assert w.headline({"closed": [], "new": [1], "still_open": [], "a_total": 0}) == "Nothing to close from the earlier check · 1 new"
+    assert w.headline({"closed": [], "new": [], "still_open": [], "a_total": 0}) == "Nothing to close from the earlier check"
+    # a file saved before step 22c has only `closed`: it still rebuilds, and reads them as fixed
+    assert w.headline({"closed": [1] * 8, "still_open": [1], "new": [], "a_total": 9}) == "8 fixed · 0 no longer apply · 1 still open · 0 new"
 
 
 def test_the_results_headline_counts_the_new_finding_too(small_pair, tmp_path):
     add_diagnosis(small_pair, "after_aeo", [finding("RENDER_PHONE_MISSING", "medium")], when=NOW + timedelta(days=11))
     page = closed_text(make(small_pair, tmp_path, "results"))
-    assert re.search(r"\d of \d closed · 1 new", page)
+    assert re.search(r"\d fixed · 0 no longer apply · \d still open · 1 new", page)
 
 
 # ---- 5. the sentence we use only with an audit -------------------------------------------------------------------------------------------

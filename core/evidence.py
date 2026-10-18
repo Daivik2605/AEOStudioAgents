@@ -24,6 +24,11 @@ class EvidenceError(Exception):
 
 SOURCES = ("us", "client")
 
+# The kinds of evidence we know by name (PLAN.md section 10). The type is free text, so another name still works; this list
+# is for the help text and for the dossier, which looks for these names to see what has arrived.
+EVIDENCE_TYPES = ("cdn_report", "ai_answer_screenshot", "client_email", "work_file", "search_console", "analytics",
+                  "bing_wmt", "gbp", "site_move")
+
 
 def check_finding_code(code: str | None) -> str | None:
     """Finding codes live in diagnose/codes.py (the registry that diagnose/findings.py builds from)."""

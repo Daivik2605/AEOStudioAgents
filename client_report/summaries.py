@@ -137,7 +137,9 @@ def summary_facts(key: str, data: dict, w: Words) -> dict | None:
         if not data.get("available"):
             return None
         say = lambda group: [w.finding(c, c.get("platform")) for c in group][:10]  # noqa: E731
-        return {"headline": w.headline(data), "closed": say(data["closed"]), "still_open": say(data["still_open"]), "new": say(data["new"])}
+        return {"headline": w.headline(data), "fixed": say(data["fixed"] if "fixed" in data else data["closed"]),
+                "removed_with_the_old_website_not_fixed": say(data.get("no_longer_applies") or []),
+                "still_open": say(data["still_open"]), "new": say(data["new"])}
     if key == "r_between":
         items = data.get("entries") or []
         return {"from": data["from"], "to": data["to"], "entries": [

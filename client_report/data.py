@@ -90,10 +90,19 @@ def _enrich_comparison(cmp: dict, by_id: dict[str, dict]) -> dict:
     # A change of platform counts only when BOTH are known: "unknown -> Wix" does not show a site was replaced.
     replaced = bool(da["platform"] and db["platform"] and da["platform"] != db["platform"])
     out = dict(cmp)
-    out["closed"] = [{**f, "evidence": ev_a.get(f["code"]), "platform": da["platform"], "site_replaced": replaced} for f in cmp["closed"]]
+    # `fixed` (and `closed`, the same list): only findings whose subject still exists. A platform change counts for these.
+    out["closed"] = [{**f, "evidence": ev_a.get(f["code"]), "platform": da["platform"], "site_replaced": replaced}
+                     for f in cmp.get("fixed", cmp["closed"])]
+    out["fixed"] = out["closed"]
+    # `no longer applies`: gone because what they were about was removed. Each says what replaced it (a finding in B).
+    out["no_longer_applies"] = [
+        {**f, "evidence": ev_a.get(f["code"]), "platform": da["platform"],
+         "replaced_by": [{**r, "evidence": ev_b.get(r["code"]), "platform": db["platform"]} for r in f["replaced_by"]]}
+        for f in cmp.get("no_longer_applies", [])]
     out["still_open"] = [{**f, "evidence": ev_b.get(f["code"]), "platform": db["platform"]} for f in cmp["still_open"]]
     out["new"] = [{**f, "evidence": ev_b.get(f["code"]), "platform": db["platform"]} for f in cmp["new"]]
     out["still_count"], out["new_count"] = len(cmp["still_open"]), len(cmp["new"])
+    out["fixed_count"], out["no_longer_applies_count"] = len(out["fixed"]), len(out["no_longer_applies"])
     return out
 
 

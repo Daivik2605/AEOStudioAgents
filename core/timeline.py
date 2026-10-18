@@ -24,12 +24,20 @@ def collect_timeline(conn, business_id: str) -> list[dict]:
     Each is {when, kind, label, text}; `label` is the checkpoint where there is one."""
     items: list[dict] = []
     with conn.cursor() as cur:
-        cur.execute("SELECT id, checked_at, checkpoint, verdict, platform, jsonb_array_length(findings) "
-                    "FROM diagnoses WHERE business_id = %s", (business_id,))
-        for id_, when, checkpoint, verdict, platform, n in cur.fetchall():
-            items.append({"id": str(id_), "when": when, "kind": "diagnosis", "label": checkpoint or "",
-                          "text": f"Diagnosis: verdict {verdict}" + (f" on {platform}" if platform else "")
-                                  + f", {n} finding(s)"})
+        cur.execute("SELECT id, checked_at, checkpoint, verdict, platform, findings, platform_plan "
+                    "FROM diagnoses WHERE business_id = %s ORDER BY checked_at, created_at, id", (business_id,))
+        previous = None
+        for id_, when, checkpoint, verdict, platform, findings, plan in cur.fetchall():
+            findings = findings or []
+            current = {"findings": findings, "platform": platform, "plan": plan, "verdict": verdict}
+            text = (f"Diagnosis: verdict {verdict}" + (f" on {platform}" if platform else "") + f", {len(findings)} finding(s)")
+            if previous is not None:
+                # What happened to the earlier findings, in the four outcomes (PLAN.md step 22c). Imported here because
+                # core/ should not need compare/ just to load.
+                from compare.diagnosis import compare_diagnoses
+                text += "; since the previous diagnosis: " + compare_diagnoses(previous, current, [], "")["headline"]
+            previous = current
+            items.append({"id": str(id_), "when": when, "kind": "diagnosis", "label": checkpoint or "", "text": text})
 
         cur.execute("SELECT id, COALESCE(started_at, created_at), checkpoint, run_type, mode, status "
                     "FROM probe_runs WHERE business_id = %s", (business_id,))
