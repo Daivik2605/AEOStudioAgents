@@ -202,7 +202,7 @@ def test_how_ai_sees_the_site_has_a_column_per_checkpoint_and_the_listed_rows(bi
     assert before["Render test"] == "content present"
     assert before["Structured data blocks"] == "LocalBusiness" and before["Name in the structured data"] == "11297775 Canada Inc"
     assert before["Areas served"] == "given" and before["Opening hours"] == "present" and before["llms.txt"] == "missing"
-    assert after["Structured data blocks"] == "none" and after["Name in the structured data"] == "no structured data"
+    assert after["Structured data blocks"] == "none found" and after["Name in the structured data"] == "no structured data"
     assert before["Sitemap and host consistency"] == "not checked yet" == after["Sitemap and host consistency"]
     assert {"Readable words (no JavaScript)", "Render test", "Main headings (h1)", "Structured data blocks", "llms.txt"} <= set(before)
 
@@ -220,7 +220,8 @@ def test_the_outcomes_between_checkpoints_use_part_one_in_plain_words(biz, tmp_p
     assert step["headline"] == "2 fixed · 6 no longer apply · 1 still open · 1 new"
     md = res.md_path.read_text()
     assert "before → after_site: 2 fixed · 6 no longer apply · 1 still open · 1 new." in md
-    assert "No longer applies: SCHEMA_ORG_MISSING_NAME (replaced by SCHEMA_NONE_FOUND); not fixed, still to be redone" in md
+    assert ("No longer applies: SCHEMA_ORG_MISSING_NAME what [SCHEMA_ORG_MISSING_NAME]; replaced by: SCHEMA_NONE_FOUND what [SCHEMA_NONE_FOUND]. "
+            "Not fixed, still to be redone") in md
 
 
 # ---- stage ---------------------------------------------------------------------------------------------------------------------------------------

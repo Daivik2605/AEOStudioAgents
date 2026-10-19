@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+from html import unescape
 from collections import Counter
 from datetime import date, timezone
 from pathlib import Path
@@ -166,7 +167,8 @@ def latest_raw_page(domain: str, root: Path | None) -> dict | None:
     html = path.read_text(encoding="utf-8", errors="replace")
     title = re.search(r"<title[^>]*>(.*?)</title>", html, re.S | re.I)
     h1s = [t for t in parse_page(html).h1_texts if t]
-    return {"file": path.name, "title": " ".join(title.group(1).split()) if title else None, "main_heading": h1s[0] if h1s else None}
+    clean = lambda text: " ".join(unescape(text).split())        # noqa: E731 - O&#x27;land -> O'land
+    return {"file": path.name, "title": clean(title.group(1)) if title else None, "main_heading": clean(h1s[0]) if h1s else None}
 
 
 # ---- structured data, read from the raw blocks a diagnosis stored -----------------------------------------------------------------
@@ -201,6 +203,20 @@ def jsonld_facts(raw_blocks: list[str]) -> dict:
     return {"blocks": blocks, "names": list(dict.fromkeys(names)), "area_served": area, "opening_hours": hours}
 
 
+def one_line(text) -> str:
+    return " ".join(str(text).split())
+
+
+COLUMN_NAMES = {"before": ("Old site", "Before our work"), "after_site": ("New site", "New site"),
+                "after_aeo": ("After AI work", "After AI work"), "check": ("Check", "Check"), "no label": ("No label", "No label")}
+
+
+def column_name(label: str, date: str, web_dev: bool) -> str:
+    """'Old site · before · 2026-10-05': what it is called for this client, the checkpoint label, and the date."""
+    web, other = COLUMN_NAMES.get(label, (label, label))
+    return f"{web if web_dev else other} · {label} · {date}"
+
+
 def diagnosis_column(d: dict) -> dict:
     codes = {f["code"] for f in d["findings"]}
     bots = (d["crawler"] or {}).get("bots") or {}
@@ -226,7 +242,7 @@ def diagnosis_column(d: dict) -> dict:
         rows["Main headings (h1)"] = "not tested"
     j = jsonld_facts(d["jsonld"])
     rows["Structured data blocks"] = (", ".join(f"{'/'.join(b['types']) or 'no type'}" + ("" if b["valid"] else " (invalid)") for b in j["blocks"])
-                                      if j["blocks"] else "none")
+                                      if j["blocks"] else "none found")
     rows["Name in the structured data"] = "; ".join(j["names"]) if j["names"] else ("no name found" if j["blocks"] else "no structured data")
     rows["Areas served"] = ("given" if j["area_served"] else "not given") if j["blocks"] else "no structured data"
     rows["Opening hours"] = j["opening_hours"] if j["blocks"] else "no structured data"
@@ -287,7 +303,7 @@ def sec_snapshot(ctx: dict, page: dict | None) -> dict:
         blocks.append(p("Not collected yet: no facts in a truth document."))
     blocks.append(h("The latest saved page"))
     if page:
-        blocks.append(table(["", ""], [["Page title", page["title"] or "(none)"], ["Main heading", page["main_heading"] or "(none)"],
+        blocks.append(table(["Item", "Value"], [["Page title", page["title"] or "(none)"], ["Main heading", page["main_heading"] or "(none)"],
                                       ["From file", page["file"]]]))
     else:
         blocks.append(p("Not collected yet: no saved page. Run `aeo diagnose` with --business."))
@@ -316,6 +332,15 @@ def question_set_state(ctx: dict, proposed: dict | None) -> dict:
     return {"state": "frozen" if proposed["version"] in ctx["used_versions"] else "draft", "version": proposed["version"]}
 
 
+def site_replaced(ctx: dict) -> bool:
+    """The new site is live: there is a diagnosis of it (after_site), or the platform changed between the first and the latest."""
+    diagnoses = ctx["diagnoses"]
+    if any(d["checkpoint"] == "after_site" for d in diagnoses):
+        return True
+    platforms = [d["platform"] for d in diagnoses if d["platform"]]
+    return len(set(platforms)) > 1
+
+
 def sec_stage(ctx: dict, conn, qstate: dict, spot: dict | None) -> dict:
     eng = ctx["engagement"]
     web_dev = eng["engagement_type"] in WEB_DEV
@@ -325,11 +350,18 @@ def sec_stage(ctx: dict, conn, qstate: dict, spot: dict | None) -> dict:
     rows.append(["Diagnoses", "done" if ctx["diagnoses"] else "not yet",
                  ", ".join(f"{k}: {v}" for k, v in per_label.items()) or "none"])
     moves = evidence_of(ctx, "site_move")
-    rows.append(["Site-move evidence logged", ("done" if moves else "not yet") if web_dev else "not applicable",
-                 f"{len(moves)} file(s), latest {latest_date(moves)}" if moves else ("the site is being replaced; nothing logged" if web_dev else f"engagement: {eng['engagement_type'] or 'not set'}")])
+    if moves:
+        move_detail = f"{len(moves)} file(s), latest {latest_date(moves)}"
+    elif web_dev and site_replaced(ctx):
+        move_detail = "site replaced; move not finished (no site_move evidence)"
+    elif web_dev:
+        move_detail = "the site is being replaced; nothing logged"
+    else:
+        move_detail = f"engagement: {eng['engagement_type'] or 'not set'}"
+    rows.append(["Site-move evidence logged", ("done" if moves else "not yet") if web_dev else "not applicable", move_detail])
     rows.append(["Spot check run", "done" if spot else "not yet", f"{_day(spot['when'])} ({spot['checkpoint'] or 'no label'})" if spot else "no finished snapshot run"])
     rows.append(["Facts confirmed", "done" if facts["facts_total"] and facts["facts_confirmed"] == facts["facts_total"] else "not yet",
-                 f"{facts['facts_confirmed']} of {facts['facts_total']}"])
+                 f"{facts['facts_confirmed']} of {facts['facts_total']}" if facts["facts_total"] else "no truth document yet"])
     rows.append(["Question set", "done" if qstate["state"] == "frozen" else "not yet",
                  f"{qstate['version']}: {qstate['state']}" if qstate["version"] else "none yet"])
     access = access_status(ctx)
@@ -356,19 +388,25 @@ def sec_how_ai_sees(ctx: dict) -> dict:
     if not cols:
         return {"data": {"columns": []}, "answer": "No diagnosis yet: nothing is known about how AI sees the site.",
                 "blocks": [p("Not collected yet. Run `aeo diagnose <url> --business <b> --checkpoint before`.")]}
+    web_dev = ctx["engagement"]["engagement_type"] in WEB_DEV
     views = [{"label": d["checkpoint"] or "no label", "date": _day(d["checked_at"]), "platform": d["platform"], "verdict": d["verdict"],
               "findings": len(d["findings"]), "rows": diagnosis_column(d)} for d in cols]
+    for v in views:
+        v["name"] = column_name(v["label"], v["date"], web_dev)
     row_names = list(views[0]["rows"])
-    head = ["", *[f"{v['label']} ({v['date']})" for v in views]]
+    head = ["What we looked at", *[v["name"] for v in views]]
     tbl = [["Platform / verdict", *[f"{v['platform'] or 'not recognised'} / {v['verdict']}" for v in views]]]
     tbl += [[name, *[v["rows"][name] for v in views]] for name in row_names]
     steps = []
     for earlier, later in zip(cols, cols[1:]):
         d = compare_diagnoses(earlier, later, [], _day(later["checked_at"]))
-        lines = [f"Fixed: {c['code']}" for c in d["fixed"]]
-        lines += [f"No longer applies: {c['code']} (replaced by {', '.join(r['code'] for r in c['replaced_by'])}); not fixed, still to be redone"
+        # The plain sentence first, then the code in brackets.
+        def say(c):
+            return f"{one_line(c['what'])} [{c['code']}]"
+        lines = [f"Fixed: {say(c)}" for c in d["fixed"]]
+        lines += [f"No longer applies: {say(c)}; replaced by: {'; '.join(say(r) for r in c['replaced_by'])}. Not fixed, still to be redone"
                   for c in d["no_longer_applies"]]
-        lines += [f"Still open: {c['code']}" for c in d["still_open"]] + [f"New: {c['code']}" for c in d["new"]]
+        lines += [f"Still open: {say(c)}" for c in d["still_open"]] + [f"New: {say(c)}" for c in d["new"]]
         steps.append({"from": earlier["checkpoint"], "to": later["checkpoint"],
                       "title": f"{earlier['checkpoint'] or 'no label'} → {later['checkpoint'] or 'no label'}: {d['headline']}.",
                       "headline": d["headline"], "lines": lines,
@@ -398,15 +436,21 @@ def sec_crawler(ctx: dict) -> dict:
             "answer": answer, "blocks": blocks}
 
 
-def sec_ai_says(ctx: dict, conn, spot: dict | None, proposed: dict | None, terms: list[str], question_dir: Path | None) -> dict:
+def sec_ai_says(ctx: dict, conn, spot: dict | None, proposed: dict | None, terms: list[str], question_dir: Path | None,
+                spot_set: dict | None) -> dict:
+    wanted = {i["text"] for i in spot_set["items"]} if spot_set else None        # None: no spot-check set was named
     if spot is None:
-        listed = [i["text"] for i in proposed["items"]] if proposed else []
+        source = spot_set["items"] if spot_set else (proposed["items"] if proposed else [])
+        listed = [i["text"] for i in source]
         other = [r for r in ctx["runs"] if r["status"] == "complete"]
         extra = " A full before/after measurement exists, but it is not a spot check." if other else ""
         blocks = [p("Not run yet." + extra), h("Questions that would be asked")]
         blocks.append(ul(listed) if listed else p("No question set yet."))
-        return {"data": {"run": None, "questions_to_ask": listed}, "answer": "The spot check has not been run yet." + extra, "blocks": blocks}
+        return {"data": {"run": None, "questions_to_ask": listed, "spot_set": spot_set and spot_set["source"]},
+                "answer": "The spot check has not been run yet." + extra, "blocks": blocks}
     answers = spot["answers"]
+    if wanted is not None:        # only the spot-check questions are listed and counted; the run may hold more
+        answers = [a for a in answers if a["question"] in wanted]
     version = next((a.get("question_set_version") for a in answers if a.get("question_set_version")), None)
     tags: dict[str, str | None] = {}
     qfile = q.find_question_file(version, question_dir) if version else None
@@ -445,7 +489,9 @@ def sec_ai_says(ctx: dict, conn, spot: dict | None, proposed: dict | None, terms
     top = rivals.most_common(5)
     answer = (f"Snapshot of {_day(spot['when'])}: the client was named in {brand['client_named']} of {brand['answers']} brand answers "
               f"and {disc['client_named']} of {disc['answers']} discovery answers.")
-    blocks = [warn("This is a SNAPSHOT, not a measurement: no range, and it says nothing reliable about any single question. "
+    note = (f"Only the {len(wanted)} spot-check question(s) from {spot_set['source']} are listed." if wanted is not None
+            else "No spot-check set was named (use --spot-check <file>, or mark questions spot_check: true), so every question in the run is listed.")
+    blocks = [p(note), warn("This is a SNAPSHOT, not a measurement: no range, and it says nothing reliable about any single question. "
                    "The per-question rows are for our own reading only and never go into a client report."),
               table(["Question", "Engine", "Type", "Client named", "Wrong facts", "Other businesses named"], tbl),
               ul([f"Brand answers that knew the client: {brand['client_named']} of {brand['answers']}.",
@@ -454,7 +500,7 @@ def sec_ai_says(ctx: dict, conn, spot: dict | None, proposed: dict | None, terms
                  + ([f"{unread} answer(s) could not be read by the extraction and are left out."] if unread else []))]
     return {"data": {"run": {"id": spot["id"], "checkpoint": spot["checkpoint"], "date": _day(spot["when"]), "question_set_version": version},
                      "rows": rows, "brand": brand, "discovery": disc, "competitors": [{"name": n, "answers": c} for n, c in top],
-                     "unread": unread, "types_from_tags": bool(tags)}, "answer": answer, "blocks": blocks}
+                     "unread": unread, "types_from_tags": bool(tags), "spot_set": spot_set and spot_set["source"]}, "answer": answer, "blocks": blocks}
 
 
 def finding_kind(code: str) -> str:
@@ -486,6 +532,9 @@ def sec_problems(ctx: dict, conn) -> dict:
     for f in facts:
         if f.get("status") != CONFIRMED:
             items.append({"kind": "facts", "severity": "medium", "text": f"Fact not confirmed: {f['label']}", "source": "truth document", "order": 2})
+    if ctx["engagement"]["engagement_type"] in WEB_DEV and not evidence_of(ctx, "site_move"):
+        items.append({"kind": "site", "severity": "medium", "text": "Finish the site move: no site_move evidence is logged"
+                      + (" (the site is already replaced)" if site_replaced(ctx) else ""), "source": "stage", "order": 2})
     for a in access_status(ctx):
         if a["applies"] and not a["received"]:
             items.append({"kind": "off-site" if a["key"] == "gbp" else "access", "severity": "medium", "text": f"Not collected yet: {a['label']}",
@@ -514,6 +563,7 @@ def sec_questions(ctx: dict, proposed: dict | None, qstate: dict, terms: list[st
         qtype, how = q.classify(i["text"], i["type"], terms)
         found = q.contains_brand(i["text"], terms)
         items.append({**i, "effective_type": qtype, "type_from": how, "brand_found": found})
+    controls = [i for i in items if i["control"]]
     warnings = []
     for i in items:
         # A discovery question must not name the brand. An untagged question that names it is flagged too: it is either a
@@ -530,18 +580,25 @@ def sec_questions(ctx: dict, proposed: dict | None, qstate: dict, terms: list[st
               f"{counts['short']} short, {counts['medium']} medium, {counts['long']} long), {plural(targets, 'target')}"
               + (f", {plural(len(warnings), 'warning')}" if warnings else "") + ".")
     blocks = [ul([f"Set {proposed['version']} ({proposed['file']}): **{qstate['state']}**.", f"Length: {counts['short']} short · {counts['medium']} medium · {counts['long']} long.",
-                  "Language: " + ", ".join(f"{k} {v}" for k, v in langs.items()) + ".", f"Targets: {targets}."])]
+                  "Language: " + ", ".join(f"{k} {v}" for k, v in langs.items()) + ".", f"Targets: {targets}. Controls: {len(controls)}. Marked for the spot check: {sum(1 for i in items if i['spot_check'])}."])]
     blocks += [warn(w) for w in warnings]
+    headers = ["Question", "Type", "Intent", "Length", "Language", "Target", "Spot check"]
+
+    def row(i: dict) -> list[str]:
+        # Every cell holds a VALUE. Where the tag was missing, the value is still shown and says how we got it.
+        return [i["text"], i["effective_type"] + ("" if i["type_from"] == "tag" else " (derived)"), i["intent"] or "not tagged",
+                i["length"] + ("" if i["length_from"] == "tag" else " (derived)"), i["language"] or "not tagged",
+                "yes" if i["is_target"] else "no", "yes" if i["spot_check"] else "no"]
     for qtype in ("discovery", "brand"):
         for length in q.LENGTHS:
-            group = [i for i in items if i["effective_type"] == qtype and i["length"] == length]
+            group = [i for i in items if i["effective_type"] == qtype and i["length"] == length and not i["control"]]
             if group:
-                blocks += [h(f"{qtype.capitalize()} · {length}"),
-                           table(["Question", "Language", "Target", "Type", "Length"],
-                                 [[i["text"], i["language"] or "not tagged", "yes" if i["is_target"] else "", "tag" if i["type_from"] == "tag" else "derived",
-                                   "tag" if i["length_from"] == "tag" else "derived"] for i in group])]
+                blocks += [h(f"{qtype.capitalize()} · {length}"), table(headers, [row(i) for i in group])]
+    if controls:
+        blocks += [h("Controls (informational; we do not work on these)"), table(headers, [row(i) for i in controls])]
     return {"data": {"set": {"version": proposed["version"], "file": proposed["file"], "state": qstate["state"]}, "items": items, "counts": counts,
-                     "languages": dict(langs), "targets": targets, "warnings": warnings}, "answer": answer, "blocks": blocks}
+                     "languages": dict(langs), "targets": targets, "controls": len(controls),
+                     "spot_check": sum(1 for i in items if i["spot_check"]), "warnings": warnings}, "answer": answer, "blocks": blocks}
 
 
 def sec_signals(ctx: dict) -> dict:
@@ -618,7 +675,8 @@ def previous_dossier(folder: Path) -> dict | None:
 
 
 def collect(conn, business: dict, *, version: int, today: date, notes: dict[str, str], notes_warnings: list[str],
-            questions_path: Path | None = None, clients_root: Path | None = None, question_dir: Path | None = None) -> dict:
+            questions_path: Path | None = None, clients_root: Path | None = None, question_dir: Path | None = None,
+            spot_check_path: Path | None = None) -> dict:
     ctx = load(conn, business)
     terms = q.brand_terms(ctx["name"], ctx["domain"], ctx["alternates"])
     folder = client_files.generated_dir(business["domain"], clients_root)
@@ -633,13 +691,23 @@ def collect(conn, business: dict, *, version: int, today: date, notes: dict[str,
         if used_file:
             proposed = q.read_questions(used_file)
     qstate = question_set_state(ctx, proposed)
+    # The spot-check set: a separate small file, or the questions marked spot_check: true in the proposed set.
+    spot_set = None
+    try:
+        if spot_check_path:
+            small = q.read_questions(spot_check_path)
+            spot_set = {"source": small["file"], "items": small["items"]}
+        elif proposed and any(i["spot_check"] for i in proposed["items"]):
+            spot_set = {"source": f"the questions marked spot_check in {proposed['file']}", "items": [i for i in proposed["items"] if i["spot_check"]]}
+    except q.DossierQuestionsError as exc:
+        raise DossierError(str(exc)) from exc
     spot = spot_check_run(ctx, conn)
     page = latest_raw_page(business["domain"], clients_root)
 
     built = {
         "how_to_use": sec_how_to_use(ctx, version, today, previous), "snapshot": sec_snapshot(ctx, page),
         "stage": sec_stage(ctx, conn, qstate, spot), "how_ai_sees": sec_how_ai_sees(ctx), "crawler": sec_crawler(ctx),
-        "ai_says": sec_ai_says(ctx, conn, spot, proposed, terms, question_dir), "problems": sec_problems(ctx, conn),
+        "ai_says": sec_ai_says(ctx, conn, spot, proposed, terms, question_dir, spot_set), "problems": sec_problems(ctx, conn),
         "questions": sec_questions(ctx, proposed, qstate, terms), "signals": sec_signals(ctx), "client_needs": sec_client_needs(ctx),
         "next": sec_next(ctx, conn, spot, qstate, proposed),
     }

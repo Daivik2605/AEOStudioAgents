@@ -6,6 +6,7 @@ links, fonts or images. Deterministic: the same data gives the same bytes.
 
 from __future__ import annotations
 
+import re
 from html import escape as E
 
 from client_report.render import CSS as CLIENT_CSS
@@ -17,7 +18,12 @@ EXTRA_CSS = """
 .notes{border-left:5px solid var(--ink);background:var(--soft);padding:6px 14px;margin:12px 0;white-space:pre-wrap}
 .notes h3{margin:0 0 4px;font-size:13px;text-transform:uppercase;letter-spacing:.06em}
 td,th{white-space:pre-wrap}
+.answer{break-after:avoid;page-break-after:avoid}
 @media print{
+ table{break-inside:auto;page-break-inside:auto}
+ table.keep{break-inside:avoid;page-break-inside:avoid}
+ tr{break-inside:avoid;page-break-inside:avoid}
+ .notes{break-inside:avoid;page-break-inside:avoid}
  .internal.running{display:block;position:fixed;top:0;left:0;right:0;margin:0;padding:3px;font-size:9pt}
  .internal.banner{display:none}
  .page{padding-top:8mm}
@@ -55,19 +61,30 @@ def render_md(data: dict) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
+def inline(text) -> str:
+    """Escapes the text, then turns **bold** and `code` into real formatting, so no markdown characters reach the page."""
+    out = E(str(text))
+    out = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", out)
+    return re.sub(r"`([^`]+)`", r"<code>\1</code>", out)
+
+
+KEEP_TABLE_ROWS = 15       # a table this short is kept on one page; a longer one may break (never forced, it may not fit)
+
+
 def _html_block(blk: dict) -> str:
     t = blk["t"]
     if t == "p":
-        return f"<p>{E(blk['text'])}</p>"
+        return f"<p>{inline(blk['text'])}</p>"
     if t == "h":
-        return f"<h3>{E(blk['text'])}</h3>"
+        return f"<h3>{inline(blk['text'])}</h3>"
     if t == "warn":
-        return f"<p class='warn'>{E(blk['text'])}</p>"
+        return f"<p class='warn'>{inline(blk['text'])}</p>"
     if t == "ul":
-        return "<ul>" + "".join(f"<li>{E(x)}</li>" for x in blk["items"]) + "</ul>"
-    head = "".join(f"<th>{E(h)}</th>" for h in blk["headers"])
-    body = "".join("<tr>" + "".join(f"<td>{E(str(c))}</td>" for c in row) + "</tr>" for row in blk["rows"])
-    return f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+        return "<ul>" + "".join(f"<li>{inline(x)}</li>" for x in blk["items"]) + "</ul>"
+    head = "".join(f"<th scope='col'>{inline(h)}</th>" for h in blk["headers"])
+    body = "".join("<tr>" + "".join(f"<td>{inline(c)}</td>" for c in row) + "</tr>" for row in blk["rows"])
+    keep = " class='keep'" if len(blk["rows"]) <= KEEP_TABLE_ROWS else ""
+    return f"<table{keep}><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
 
 
 def render_html(data: dict) -> str:
@@ -77,7 +94,7 @@ def render_html(data: dict) -> str:
     for n, s in enumerate(data["sections"], start=1):
         notes = (f"<div class='notes'><h3>Our notes</h3>{E(s['notes'])}</div>" if s["notes"].strip()
                  else "<div class='notes'><h3>Our notes</h3><em>No notes yet.</em></div>")
-        parts.append(f"<section class='sec' id='{E(s['key'])}'><h2>{n}. {E(s['title'])}</h2><p class='answer'>{E(s['answer'])}</p>"
+        parts.append(f"<section class='sec' id='{E(s['key'])}'><h2>{n}. {E(s['title'])}</h2><p class='answer'>{inline(s['answer'])}</p>"
                      + "".join(_html_block(x) for x in s["blocks"]) + notes + "</section>")
     warnings = "".join(f"<p class='warn'>Notes file: {E(w)}</p>" for w in data["notes_warnings"])
     return ("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"

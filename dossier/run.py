@@ -38,7 +38,7 @@ def next_version(folder: Path) -> int:
     return max(numbers, default=0) + 1
 
 
-def make_dossier(business: dict, *, questions: Path | None = None, clients_root: Path | None = None, today: date | None = None,
+def make_dossier(business: dict, *, questions: Path | None = None, spot_check: Path | None = None, clients_root: Path | None = None, today: date | None = None,
                  question_dir: Path | None = None) -> DossierResult:
     day = today or date.today()
     notes_path, created = notes_mod.ensure_notes(business["name"] or business["domain"], business["domain"], clients_root)
@@ -48,7 +48,8 @@ def make_dossier(business: dict, *, questions: Path | None = None, clients_root:
     conn = get_connection()
     try:
         data = collect(conn, business, version=version, today=day, notes=notes, notes_warnings=warnings,
-                       questions_path=questions, clients_root=clients_root, question_dir=question_dir)
+                       questions_path=questions, clients_root=clients_root, question_dir=question_dir,
+                       spot_check_path=spot_check)
     finally:
         conn.close()
     text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"

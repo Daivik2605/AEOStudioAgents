@@ -419,11 +419,12 @@ def client_report(
 def dossier(
     business: str = typer.Option(..., "--business", help="Business id, domain or name."),
     questions: Optional[Path] = typer.Option(None, "--questions", help="A proposed question set (YAML). Default: the latest one an audit used."),
+    spot_check: Optional[Path] = typer.Option(None, "--spot-check", help="A separate small set for the spot check (YAML). Default: the questions marked spot_check: true."),
 ) -> None:
     """Write the internal baseline dossier (.md, .html, .json). No AI. Never shown to the client."""
     bz = _find_business(business)
     try:
-        made = make_dossier(bz, questions=questions)
+        made = make_dossier(bz, questions=questions, spot_check=spot_check)
     except DossierError as exc:
         _fail(str(exc))
     d = made.data

@@ -1,5 +1,8 @@
 """Reading a proposed question set for the dossier, and the brand-name check.
 
+The tags, one schema (the one step 22d will use): type (discovery / brand), intent, length (short / medium / long),
+language, is_target, control (true for informational controls), spot_check (true for the small first-look set).
+
 This reader is deliberately forgiving. The strict loader (audit/question_set.py) refuses tags it does not know, and the
 discovery/brand, length and language tags are not part of it yet (step 22d). A draft set is exactly where those tags first
 appear, so the dossier reads them as they are written and reports what is missing. It validates nothing and changes nothing.
@@ -81,7 +84,10 @@ def read_questions(path: Path) -> dict:
         items.append({"text": text, "type": entry.get("type"), "intent": entry.get("intent"),
                       "length": tag_length if tag_length in LENGTHS else length_of(text),
                       "length_from": "tag" if tag_length in LENGTHS else "word count",
-                      "language": entry.get("language"), "is_target": bool(entry.get("is_target", False))})
+                      "language": entry.get("language"), "is_target": bool(entry.get("is_target", False)),
+                      # control: an informational question we deliberately do not work on. spot_check: part of the small
+                      # set asked once on each engine at the start (the dossier's "What AI says today").
+                      "control": bool(entry.get("control", False)), "spot_check": bool(entry.get("spot_check", False))})
     return {"version": path.stem, "file": path.name, "items": items}
 
 
