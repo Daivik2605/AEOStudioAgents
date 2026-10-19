@@ -13,7 +13,7 @@ from audit.cost_gate import CostGateAborted
 from audit.fill_in import ImportRefused, generate_fill_in, import_fill_in
 from audit.manual import AuditError, run_manual_audit
 from audit.report import ReportError, make_report
-from dossier.run import DossierError, make_dossier
+from dossier.run import DossierError, make_dossier, rebuild_from_json as rebuild_dossier
 from client_report.run import ClientReportError, make_client_report, rebuild_from_json
 from compare.run import CompareError, make_comparison
 from recommend.run import RecommendError, make_recommendations
@@ -420,9 +420,22 @@ def dossier(
     business: str = typer.Option(..., "--business", help="Business id, domain or name."),
     questions: Optional[Path] = typer.Option(None, "--questions", help="A proposed question set (YAML). Default: the latest one an audit used."),
     spot_check: Optional[Path] = typer.Option(None, "--spot-check", help="A separate small set for the spot check (YAML). Default: the questions marked spot_check: true."),
+    from_json: Optional[Path] = typer.Option(None, "--from-json", help="Make the .md and .html again from a saved dossier .json. Nothing is gathered."),
 ) -> None:
     """Write the internal baseline dossier (.md, .html, .json). No AI. Never shown to the client."""
     bz = _find_business(business)
+    if from_json is not None:
+        if questions or spot_check:
+            _fail("--from-json rebuilds a saved dossier as it was; do not combine it with --questions or --spot-check")
+        try:
+            again = rebuild_dossier(bz, from_json)
+        except DossierError as exc:
+            _fail(str(exc))
+        words = {True: "identical to the original", False: "DIFFERENT from the original (the original was left alone)", None: "the original was missing, so it was recreated"}
+        typer.echo(f"Rebuilt from {from_json.name}: document {words[again.identical['md']]}; web page {words[again.identical['html']]}.")
+        typer.echo(f"Document: {again.md_path}")
+        typer.echo(f"Web page: {again.html_path}")
+        return
     try:
         made = make_dossier(bz, questions=questions, spot_check=spot_check)
     except DossierError as exc:

@@ -407,7 +407,12 @@ def sec_how_ai_sees(ctx: dict) -> dict:
         lines += [f"No longer applies: {say(c)}; replaced by: {'; '.join(say(r) for r in c['replaced_by'])}. Not fixed, still to be redone"
                   for c in d["no_longer_applies"]]
         lines += [f"Still open: {say(c)}" for c in d["still_open"]] + [f"New: {say(c)}" for c in d["new"]]
-        steps.append({"from": earlier["checkpoint"], "to": later["checkpoint"],
+        rows = [{"outcome": "fixed", "what": one_line(c["what"]), "code": c["code"], "replaced_by": []} for c in d["fixed"]]
+        rows += [{"outcome": "no longer applies", "what": one_line(c["what"]), "code": c["code"],
+                  "replaced_by": [{"what": one_line(r["what"]), "code": r["code"]} for r in c["replaced_by"]]} for c in d["no_longer_applies"]]
+        rows += [{"outcome": "open", "what": one_line(c["what"]), "code": c["code"], "replaced_by": []} for c in d["still_open"]]
+        rows += [{"outcome": "new", "what": one_line(c["what"]), "code": c["code"], "replaced_by": []} for c in d["new"]]
+        steps.append({"from": earlier["checkpoint"], "to": later["checkpoint"], "rows": rows,
                       "title": f"{earlier['checkpoint'] or 'no label'} → {later['checkpoint'] or 'no label'}: {d['headline']}.",
                       "headline": d["headline"], "lines": lines,
                       "counts": {k: d[k] for k in ("fixed_count", "no_longer_applies_count", "still_open_count", "new_count")}})
@@ -418,7 +423,8 @@ def sec_how_ai_sees(ctx: dict) -> dict:
     if not steps:
         blocks.append(p("Only one checkpoint so far: nothing to compare."))
     for s in steps:
-        blocks += [p(s["title"]), ul(s["lines"])] if s["lines"] else [p(s["title"])]
+        # `lines` is the plain-text form (markdown prints it); `rows` is the same findings as data (the web page makes a table).
+        blocks += [{"t": "findings", "title": s["title"], "rows": s["rows"], "lines": s["lines"]}]
     return {"data": {"columns": views, "steps": steps}, "answer": answer, "blocks": blocks}
 
 

@@ -265,26 +265,37 @@ def css_of(page: str) -> str:
     return re.sub(r"\s+", "", re.search(r"<style>(.*?)</style>", page, re.S).group(1))
 
 
+def print_block(css: str) -> str:
+    return css[css.index("@mediaprint"):]
+
+
+def rule_for(css: str, selector: str, prop: str) -> bool:
+    """Is there a rule whose selector LIST contains `selector` and which sets `prop`?"""
+    for sels, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+        if selector in sels.split(",") and prop in body:
+            return True
+    return False
+
+
 def test_headings_stay_with_their_first_table_and_long_tables_may_break(biz, tmp_path):
     filled(biz, tmp_path)
     res = dossier(biz, tmp_path, questions=write_questions(tmp_path / "s_v1.yaml", FULL))
     css = css_of(res.html_path.read_text())
-    printed = css[css.index("@mediaprint"):]
-    assert re.search(r"h2,h3\{[^}]*break-after:avoid", printed) and re.search(r"\.answer\{[^}]*break-after:avoid", css)
-    # no table is forced to stay whole by default: the last word for a plain table is "auto"
-    assert printed.rindex("table{break-inside:auto") > printed.index("table,ul")        # declared after the general avoid list
-    assert "table.keep{break-inside:avoid" in printed and "tr{break-inside:avoid" in printed
+    printed = print_block(css)
+    assert rule_for(printed, "h2", "break-after:avoid") and rule_for(printed, "h3", "break-after:avoid")
+    assert rule_for(printed, ".answer", "break-after:avoid") and rule_for(printed, "p.sub-note", "break-after:avoid")
+    # a plain table is allowed to break (it may be taller than a page); only a short one is marked to stay whole
+    assert "table{break-inside:auto" in printed and "table.keep{break-inside:avoid" in printed and "tr{break-inside:avoid" in printed
+    assert not rule_for(printed, "table", "break-inside:avoid")
     assert "break-before:page" not in css and "page-break-before:always" not in css
 
 
-def test_only_short_tables_are_marked_to_stay_together(biz):
-    short = {"business": {"name": "x", "domain": "x.example", "status": "prospect"}, "version": 1, "generated_on": "2026-10-25", "notes_warnings": [],
-             "sections": [{"key": "a", "title": "A", "answer": "a", "data": {}, "notes": "",
-                           "blocks": [{"t": "table", "headers": ["H"], "rows": [["r"]] * 15}, {"t": "table", "headers": ["H"], "rows": [["r"]] * 16}]}]}
-    page = render_html(short)
-    assert page.count("<table class='keep'>") == 1 and page.count("<table>") == 1
+def test_only_short_tables_are_marked_to_stay_together():
+    from dossier.render import table_html
+    assert table_html({"headers": ["H"], "rows": [["r"]] * 15}).startswith("<table class='keep'>")
+    assert table_html({"headers": ["H"], "rows": [["r"]] * 16}).startswith("<table><thead>")
 
 
 def test_notes_boxes_do_not_split_across_pages(biz, tmp_path):
     css = css_of(dossier(biz, tmp_path).html_path.read_text())
-    assert re.search(r"@mediaprint\{.*\.notes\{break-inside:avoid", css)
+    assert rule_for(print_block(css), ".notes", "break-inside:avoid")

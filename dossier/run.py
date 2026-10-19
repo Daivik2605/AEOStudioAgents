@@ -18,7 +18,7 @@ from dossier import notes as notes_mod
 from dossier.data import DossierError, collect
 from dossier.render import render_html, render_md
 
-__all__ = ["DossierError", "DossierResult", "make_dossier"]
+__all__ = ["DossierError", "DossierResult", "make_dossier", "rebuild_from_json"]
 
 
 @dataclass
@@ -59,3 +59,35 @@ def make_dossier(business: dict, *, questions: Path | None = None, spot_check: P
     html = client_files.write_new(folder, f"{stem}.html", render_html(data).encode("utf-8"))
     js = client_files.write_new(folder, f"{stem}.json", text.encode("utf-8"))
     return DossierResult(md, html, js, notes_path, created, warnings, data)
+
+
+@dataclass
+class RebuildResult:
+    md_path: Path
+    html_path: Path
+    identical: dict          # {"md": True/False/None, "html": ...}: same as the original, different, or the original was missing
+
+
+def rebuild_from_json(business: dict, json_file: Path, *, clients_root: Path | None = None) -> RebuildResult:
+    """Makes the .md and .html again from a saved .json and nothing else. A file that is already there with the same bytes is
+    left alone; one that differs is never overwritten (the new one is written beside it under the next free name)."""
+    try:
+        data = json.loads(Path(json_file).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise DossierError(f"cannot read {json_file}: {exc}") from exc
+    if not isinstance(data, dict) or data.get("tool", {}).get("name") != "aeo dossier" or "sections" not in data:
+        raise DossierError(f"{json_file} is not a dossier data file")
+    if data["business"]["id"] != business["id"]:
+        raise DossierError("that data file belongs to a different business")
+    folder = client_files.generated_dir(business["domain"], clients_root)
+    paths, same = {}, {}
+    for ext, text in (("md", render_md(data)), ("html", render_html(data))):
+        target = folder / (Path(json_file).stem + f".{ext}")
+        raw = text.encode("utf-8")
+        if target.exists() and target.read_bytes() == raw:
+            paths[ext], same[ext] = target, True
+        else:
+            existed = target.exists()          # asked BEFORE writing: write_new creates the file
+            paths[ext] = client_files.write_new(folder, target.name, raw)
+            same[ext] = False if existed else None
+    return RebuildResult(paths["md"], paths["html"], same)
