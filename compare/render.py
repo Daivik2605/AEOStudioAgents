@@ -12,7 +12,8 @@ MEASURE_NAMES = {
     "recommendation_among_named": "Recommendation rate, among answers naming at least one business",
     "gap": "Gap (competitor named, client not)",
     "retrieval": "Retrieval activation (engine searched)",
-    "accuracy": "Accuracy (correct ÷ correct + incorrect)",
+    "accuracy": "Accuracy, overall: every answer that named the client",
+    "accuracy_brand": "Accuracy, brand questions only",
 }
 
 
@@ -112,6 +113,9 @@ def _render_audit(a: dict, la: str, lb: str, floor: dict) -> list[str]:
     out.append("")
     if not a["accuracy_compared"]:
         out += ["Accuracy is not compared: it needs confirmed facts in the truth document at both checkpoints.", ""]
+    out += [f"Every measure except accuracy is compared on discovery questions only ({h.get('discovery_questions', h['questions'])} "
+            f"of the {h['questions']} questions: the ones that do not name the client). Accuracy is shown two ways: overall (every answer that named the "
+            "client) and on brand questions only. A change in recognition (brand questions) is not compared yet.", ""]
     out += [f"Denominators: the first four measures use all scored answers or only those naming at least one business, as labelled. "
             f"Answers where the client was named but not recommended: A {h['mentioned_only']['a']}, B {h['mentioned_only']['b']}. "
             f"Answers where we could not tell whether the engine searched: A {h['retrieval_unknown']['a']}, B {h['retrieval_unknown']['b']}.", ""]

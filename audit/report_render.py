@@ -11,6 +11,7 @@ of `aeo recommend`.
 from __future__ import annotations
 
 import re
+from typing import Callable
 
 DASH = "–"
 
@@ -23,7 +24,8 @@ MEASURE_LABELS = [
     ("recommendation_among_named", "Recommendation rate, counting only answers that named at least one business"),
     ("gap", "Gap score (named a competitor but not the client)"),
     ("retrieval", "Retrieval activation (the engine searched the web)"),
-    ("accuracy", "Accuracy score (correct ÷ correct + incorrect)"),
+    ("accuracy", "Accuracy, overall: every answer that named the client (correct ÷ correct + incorrect)"),
+    ("accuracy_brand", "Accuracy, brand questions only (correct ÷ correct + incorrect)"),
 ]
 
 
@@ -74,6 +76,25 @@ def block_notes(block: dict) -> list[str]:
     return out
 
 
+def group_tables(title: str, intro: str, section: dict | None, label: Callable[[str], str]) -> list[str]:
+    """One small headline table per group (question length, language). Shown only for the before/after design."""
+    out = [f"## {title}", ""]
+    if section is None:
+        return out + ["Not shown for a snapshot: a snapshot reports overall figures only (PLAN.md §8).", ""]
+    if not section["groups"]:
+        return out + ["No discovery question carries this tag, so there is nothing to split.", ""]
+    out += [intro, "", "| Group | Questions | Answers | Visibility | 95% range | Recommendation rate | 95% range |",
+            "|---|---|---|---|---|---|---|"]
+    for g in section["groups"]:
+        v, r = g["measures"]["visibility"], g["measures"]["recommendation"]
+        out.append(f"| {label(g['group'])} | {g['questions']} | {g['answers']} | {pct(v['value'])} | {range_text(v)} | "
+                   f"{pct(r['value'])} | {range_text(r)} |")
+    if section["questions_without_tag"]:
+        out += ["", f"{section['questions_without_tag']} discovery question(s) carry no value for this tag and are left "
+                    "out of the table. They are still in the headline."]
+    return out + [""]
+
+
 def render_markdown(data: dict) -> str:
     h, d, ex = data["header"], data["design"], data["extraction"]
     name = h["business"]["name"] or h["business"]["domain"]
@@ -118,9 +139,23 @@ def render_markdown(data: dict) -> str:
     ]
     out += ["## About this report", "", "| | |", "|---|---|"] + [f"| {k} | {v} |" for k, v in rows] + [""]
 
+    # ---- the two kinds of question ----
+    mix = data["question_mix"]
+    out += ["## Two kinds of question", "",
+            f"**{mix['discovery_questions']} discovery question(s)** ({mix['discovery_answers']} answers read): the buyer has "
+            "never heard of the client, so the client's name never appears. Only these measure visibility, recommendation, "
+            f"gap and share of voice. **{mix['brand_questions']} brand question(s)** ({mix['brand_answers']} answers read): "
+            "the buyer already knows the name. These measure recognition and accuracy, and are kept out of visibility, "
+            "because AI always names a business it was asked about by name (PLAN.md §8)."]
+    if mix["types_derived_from_text"]:
+        out.append(f"{mix['types_derived_from_text']} question(s) did not say which kind they were, so it was worked out from "
+                   "whether the question names the client.")
+    out.append("")
+
     # ---- headline ----
     hl = data["headline"]
-    out += ["## Headline", ""] + measures_table(hl) + ["", tier_line(hl)] + [""] + block_notes(hl) + [""]
+    out += ["## Headline (discovery questions)", "", "Accuracy is the exception, measured two ways: overall (every answer in which a claim "
+            "about the client could be checked) and on brand questions only.", ""] + measures_table(hl) + ["", tier_line(hl)] + [""] + block_notes(hl) + [""]
     if ex["failed"]:
         out += [f"**{len(ex['failed'])} answer(s) could not be read by the model and are left out of every figure above.** "
                 "They are counted here and kept in the appendix; they are not treated as answers that named nobody.", ""]
@@ -133,6 +168,17 @@ def render_markdown(data: dict) -> str:
             f"({data['tool']['bootstrap']['resamples']:,} resamples, fixed seed {data['tool']['bootstrap']['seed']}), "
             f"so the same data always gives the same range. Scores use formula version {data['tool']['formula_version']}.", ""]
 
+    # ---- brand questions ----
+    br = data["brand"]
+    out += ["## Brand questions: does AI know the client?", ""]
+    if not br["available"]:
+        out += [f"Not available: {br['reason']}.", ""]
+    else:
+        r = br["recognition"]
+        out += [f"Recognition is the share of brand-question answers in which AI knew the business at all: "
+                f"**{pct(r['value'])}** ({range_text(r)}), {based_on(r)} answers, from {br['questions']} question(s). "
+                "It says nothing about visibility: these questions gave AI the name.", ""]
+
     # ---- by engine ----
     if data["by_engine"] is not None:
         out += ["## By engine", ""]
@@ -140,6 +186,14 @@ def render_markdown(data: dict) -> str:
             out += [f"### {e['label']}", ""] + measures_table(e) + ["", tier_line(e), ""]
     else:
         out += ["## By engine", "", "Not shown for a snapshot: a snapshot reports overall figures only (PLAN.md §8).", ""]
+
+    # ---- by length and language ----
+    out += group_tables("By question length",
+                        "Short questions are search-box style, long ones describe a real situation. Small specialists often "
+                        "win or lose on the long ones (PLAN.md §8). Each group is small, so read the ranges, not the middle figure.",
+                        data.get("by_length"), lambda g: g)
+    out += group_tables("By language", "Discovery questions only. Quebec buyers ask in French and can get different answers.",
+                        data.get("by_language"), lambda g: {"en": "English", "fr": "French"}.get(g, g))
 
     # ---- targets vs control ----
     out += ["## Targets vs control", ""]
@@ -191,14 +245,16 @@ def render_markdown(data: dict) -> str:
 
     # ---- descriptors ----
     ds = data["descriptors"]
-    out += ["## How AI describes the client", ""]
+    out += ["## How AI describes the client", "",
+            "From brand questions only, where AI was asked about the client by name.", ""]
     if ds["words"]:
-        out += [f"Words the answers used for the client (it was named in {ds['client_named_in']} answer(s)):", ""]
+        out += [f"Words the answers used for the client (it was named in {ds['client_named_in']} brand answer(s)):", ""]
         out += [f"- {w['word']} — {w['answers']} answer(s)" for w in ds["words"]]
         if ds["not_shown"]:
             out.append(f"- …and {ds['not_shown']} more word(s) not shown")
     else:
-        out.append("No descriptive words were recorded for the client.")
+        out.append("No descriptive words were recorded for the client"
+                   + ("." if data["brand"]["available"] else ", because this run asked no brand questions."))
     out.append("")
 
     # ---- wrong facts ----
@@ -241,7 +297,8 @@ def render_markdown(data: dict) -> str:
     out += ["## Appendix: every question and every answer (raw answers, not findings)", "",
             "Exactly as collected. Nothing below is a score, and no conclusion should be drawn from a single answer.", ""]
     for q in data["appendix"]:
-        out += [f"### Q{q['number']}{' (target)' if q['is_target'] else ''}: {q['question']}", ""]
+        kind = f" [{q['type']}]" if q.get("type") else ""
+        out += [f"### Q{q['number']}{' (target)' if q['is_target'] else ''}{kind}: {q['question']}", ""]
         if not q["answers"]:
             out += ["No answer has been collected for this question.", ""]
         for a in q["answers"]:

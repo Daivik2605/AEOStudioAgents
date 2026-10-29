@@ -143,6 +143,7 @@ def _audit_today(conn, business: dict) -> dict:
         "headline": data["headline"], "targets_vs_control": data["targets_vs_control"],
         "share_of_voice": data["share_of_voice"], "wrong_facts": data["wrong_facts"],
         "tags_recorded": data["tags_recorded"],
+        "question_mix": data["question_mix"], "brand": data["brand"],
         "questions": [{"number": q["number"], "text": q["question"], "is_target": q["is_target"]} for q in data["appendix"]],
         "formula_version": data["tool"]["formula_version"],
     }

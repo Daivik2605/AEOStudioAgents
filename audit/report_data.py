@@ -19,6 +19,7 @@ from uuid import UUID
 
 from audit import store
 from audit.fill_in import ENGINE_LABELS
+from dossier.questions import brand_terms, classify, length_of
 from scoring import bootstrap, scoring
 
 # The before/after design of PLAN.md section 8: 32 frozen questions x 2 engines x 3 runs. Anything else is a snapshot.
@@ -133,6 +134,9 @@ def answer_counts(a: dict) -> dict[str, int]:
     }
 
 
+ACCURACY_MEASURES = ("accuracy", "accuracy_brand")
+
+
 def _rate(fn: Callable[[int, int], float], num: Callable[[dict], int], den: Callable[[dict], int]):
     return lambda c: fn(num(c), den(c)) if den(c) > 0 else None
 
@@ -151,8 +155,95 @@ for _name, _fn, _num, _den in [
     # Unverifiable claims are in neither count, as PLAN.md section 8 says.
     ("accuracy", lambda correct, checked: scoring.accuracy_score(correct, checked - correct),
      lambda c: c["correct"], lambda c: c["correct"] + c["incorrect"]),
+    # The same formula, worked out on brand-question answers only (the buyer already knows the name). Never part of a
+    # discovery block: _headline_block adds it separately.
+    ("accuracy_brand", lambda correct, checked: scoring.accuracy_score(correct, checked - correct),
+     lambda c: c["correct"], lambda c: c["correct"] + c["incorrect"]),
 ]:
     MEASURES[_name] = (_rate(_fn, _num, _den), _num, _den)
+
+
+# Recognition is measured on brand questions only. It is deliberately not in MEASURES: put into a discovery block it
+# would just repeat visibility (PLAN.md section 8: AI always "names" a business you asked about by name).
+RECOGNITION = _rate(scoring.recognition_rate, lambda c: c["named"], lambda c: c["n"])
+
+
+def question_types(planned: list[dict] | None, texts: list[str], business: dict) -> dict[str, dict]:
+    """For each question text: its type (discovery / brand), where that came from, its length and its language.
+    A run started after step 22d recorded all of this. An older run recorded only intent and target, so the type is
+    worked out now from whether the question names the business, and the report says it was derived."""
+    terms = brand_terms(business["name"], business["domain"])
+    out: dict[str, dict] = {}
+    for q in planned or []:
+        if q.get("type"):
+            kind, how = q["type"], q.get("type_source") or "tag"
+        else:
+            kind, how = classify(q["text"], None, terms)
+        out[q["text"]] = {"type": kind, "type_source": how, "length": q.get("length") or length_of(q["text"]),
+                          "language": q.get("language")}
+    for t in texts:
+        if t not in out:
+            kind, how = classify(t, None, terms)
+            out[t] = {"type": kind, "type_source": how, "length": length_of(t), "language": None}
+    return out
+
+
+def _headline_block(discovery: list[dict], scored: list[dict], brand: list[dict], *, with_accuracy: bool) -> dict:
+    """The headline: every visibility figure from discovery answers only. Accuracy is measured two ways, because a
+    wrong fact is wrong wherever it was said:
+      accuracy        every answer in which a claim about the client was checked (discovery and brand)
+      accuracy_brand  brand-question answers only, where AI was asked about the client by name
+    The second is left out when there are no brand answers."""
+    block = _block(discovery, with_accuracy=False)
+    if with_accuracy:
+        everything = _block(scored, with_accuracy=True)
+        block["measures"]["accuracy"] = everything["measures"]["accuracy"]
+        block["claims"] = everything["claims"]
+        if brand:
+            block["measures"]["accuracy_brand"] = _accuracy_brand(brand)
+    return block
+
+
+def _accuracy_brand(brand: list[dict]) -> dict:
+    """Accuracy on brand-question answers, with its range (questions resampled, as everywhere)."""
+    by_question: dict[str, list[dict]] = defaultdict(list)
+    for a in brand:
+        by_question[a["question"]].append(answer_counts(a))
+    units = [bootstrap.add_counts(v) for _, v in sorted(by_question.items())]
+    total = bootstrap.add_counts(units)
+    stat, num, den = MEASURES["accuracy_brand"]
+    rng = bootstrap.ranges(units, {"accuracy_brand": stat})["accuracy_brand"]
+    return {"value": stat(total), "low": rng[0] if rng else None, "high": rng[1] if rng else None,
+            "num": num(total), "den": den(total)}
+
+
+def _brand_section(brand: list[dict]) -> dict:
+    """Recognition on brand questions, with its range. Counts only, as everywhere: nothing per question."""
+    if not brand:
+        return {"available": False, "reason": "this run asked no brand questions (questions that name the client)"}
+    by_question: dict[str, list[dict]] = defaultdict(list)
+    for a in brand:
+        by_question[a["question"]].append(answer_counts(a))
+    units = [bootstrap.add_counts(v) for _, v in sorted(by_question.items())]
+    total = bootstrap.add_counts(units)
+    rng = bootstrap.ranges(units, {"recognition": RECOGNITION})["recognition"]
+    return {"available": True, "reason": None, "questions": len(units), "answers": total.get("n", 0),
+            "recognition": {"value": RECOGNITION(total), "low": rng[0] if rng else None,
+                            "high": rng[1] if rng else None, "num": total.get("named", 0), "den": total.get("n", 0)}}
+
+
+def _by_group(discovery: list[dict], group_of: Callable[[dict], "str | None"], order: list[str] | None) -> dict:
+    """The discovery headline split by a tag (question length or language). A question with no value for the tag is
+    left out of every group and counted, never guessed."""
+    groups: dict[str, list[dict]] = defaultdict(list)
+    untagged = {a["question"] for a in discovery if group_of(a) is None}
+    for a in discovery:
+        value = group_of(a)
+        if value is not None:
+            groups[value].append(a)
+    keys = [k for k in (order or sorted(groups)) if k in groups]
+    return {"groups": [{"group": k, **_block(groups[k], with_accuracy=False)} for k in keys],
+            "questions_without_tag": len(untagged)}
 
 
 def _block(answers: list[dict], *, with_accuracy: bool) -> dict:
@@ -162,7 +253,7 @@ def _block(answers: list[dict], *, with_accuracy: bool) -> dict:
         by_question[a["question"]].append(answer_counts(a))
     units = [bootstrap.add_counts(v) for _, v in sorted(by_question.items())]
     total = bootstrap.add_counts(units)
-    names = [m for m in MEASURES if m != "accuracy" or with_accuracy]
+    names = [m for m in MEASURES if m not in ACCURACY_MEASURES or (m == "accuracy" and with_accuracy)]
     found = bootstrap.ranges(units, {m: MEASURES[m][0] for m in names})
     out: dict = {"answers": total.get("n", 0), "questions": len(units), "measures": {}}
     for m in names:
@@ -341,6 +432,19 @@ def build_report(conn, business: dict, run: dict, *, partial: bool) -> dict:
     number = {q["text"]: q["number"] for q in questions}
     target = {q["text"]: q["is_target"] for q in questions}
 
+    # Discovery or brand, short/medium/long, language. A run started before step 22d did not record these; they are
+    # worked out now and the report says so.
+    types = question_types(planned, [q["text"] for q in questions], business)
+    for q in questions:
+        q.update(types[q["text"]])
+    discovery = [a for a in scored if types[a["question"]]["type"] == "discovery"]
+    brand = [a for a in scored if types[a["question"]]["type"] == "brand"]
+    if not discovery:
+        raise ReportError(
+            "none of this run's questions is a discovery question (one that does not name the client), so there is "
+            "nothing to measure visibility on. Brand questions measure recognition and accuracy only (PLAN.md section 8).")
+    derived_types = sum(1 for q in questions if q["type_source"] != "tag")
+
     engines = list(started.get("engines") or [])
     engines += [e for e in dict.fromkeys(a["engine"] for a in answers) if e not in engines]
     repeats = int(started.get("repeats") or 1)
@@ -378,19 +482,28 @@ def build_report(conn, business: dict, run: dict, *, partial: bool) -> dict:
                                    "engine": a["engine"], "repeat": a["repeat"]}
                                   for a in sorted((a for a in answers if a["named"] is None), key=order)]},
         "tags_recorded": tags_recorded,
-        "headline": _block(scored, with_accuracy=with_accuracy),
+        # Visibility, recommendation, gap and the rest are measured on discovery questions only (PLAN.md section 8).
+        "question_mix": {"discovery_questions": sum(1 for q in questions if q["type"] == "discovery"),
+                         "brand_questions": sum(1 for q in questions if q["type"] == "brand"),
+                         "discovery_answers": len(discovery), "brand_answers": len(brand),
+                         "types_derived_from_text": derived_types},
+        "headline": _headline_block(discovery, scored, brand, with_accuracy=with_accuracy),
+        "brand": _brand_section(brand),
     }
 
     if is_before_after:
         data["by_engine"] = [{"engine": e, "label": engine_label(e),
-                              **_block([a for a in scored if a["engine"] == e], with_accuracy=with_accuracy)}
-                             for e in engines if any(a["engine"] == e for a in scored)]
-        targets = [a for a in scored if target[a["question"]]]
-        control = [a for a in scored if not target[a["question"]]]
+                              **_block([a for a in discovery if a["engine"] == e], with_accuracy=False)}
+                             for e in engines if any(a["engine"] == e for a in discovery)]
+        data["by_length"] = _by_group(discovery, lambda a: types[a["question"]]["length"],
+                                      ["short", "medium", "long"])
+        data["by_language"] = _by_group(discovery, lambda a: types[a["question"]]["language"], None)
+        targets = [a for a in discovery if target[a["question"]]]
+        control = [a for a in discovery if not target[a["question"]]]
         if targets and control:
             data["targets_vs_control"] = {"available": True, "reason": None,
-                                          "targets": _block(targets, with_accuracy=with_accuracy),
-                                          "control": _block(control, with_accuracy=with_accuracy)}
+                                          "targets": _block(targets, with_accuracy=False),
+                                          "control": _block(control, with_accuracy=False)}
         else:
             why = ("no question in this run is marked as a target" if not targets
                    else "every question is marked as a target, so there is no control")
@@ -399,16 +512,21 @@ def build_report(conn, business: dict, run: dict, *, partial: bool) -> dict:
             data["targets_vs_control"] = {"available": False, "reason": why}
     else:
         data["by_engine"] = None
+        data["by_length"] = None
+        data["by_language"] = None
         data["targets_vs_control"] = None
 
-    sov = _share_of_voice(scored)
+    # Share of voice and reasons: discovery only, or the client would look present in every brand answer.
+    # Descriptors use brand questions only: that is where AI is asked what the client is.
+    sov = _share_of_voice(discovery)
     data["share_of_voice"] = {k: sov[k] for k in ("businesses_named", "rows", "client_outside_top", "others")}
     data["reasons"] = sov["reasons"]
-    data["descriptors"] = sov["descriptors"]
+    data["descriptors"] = _share_of_voice(brand)["descriptors"]
     data["wrong_facts"] = _wrong_facts(scored, order, facts)
-    data["sources"] = _sources(answers, business["domain"])
+    data["sources"] = _sources([a for a in answers if types[a["question"]]["type"] == "discovery"], business["domain"])
     data["appendix"] = [
-        {"number": q["number"], "question": q["text"], "is_target": q["is_target"], "answers": [
+        {"number": q["number"], "question": q["text"], "is_target": q["is_target"], "type": q["type"],
+         "type_source": q["type_source"], "length": q["length"], "language": q["language"], "answers": [
             {"engine": a["engine"], "label": engine_label(a["engine"]), "repeat": a["repeat"], "mode": a["mode"],
              "searched": a["searched"], "logged_in": a["logged_in"], "location": a["location"],
              "links": [l["url"] for l in (a["sources"] or [])], "read_by_model": a["named"] is not None,

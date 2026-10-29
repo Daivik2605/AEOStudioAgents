@@ -11,6 +11,7 @@ from psycopg.types.json import Jsonb
 from core.journal import write_journal
 from core.operator import operator_name
 from core.profiles import confirmed_facts
+from audit.question_set import resolve_tags
 
 def load_business_and_profile(conn: psycopg.Connection, business_id: str, profile_id: str | None = None) -> dict | None:
     """The business plus one profile version, or None if there is no such business.
@@ -139,6 +140,8 @@ def start_run(conn: psycopg.Connection, *, business: dict, qs, checkpoint: str |
               answers_expected: int, how: str, extra: dict | None = None) -> UUID:
     """Creates the probe_run and journals probe_started. Both capture routes (terminal and fill-in file) use this.
     The journal entry holds the question-set fingerprint that the hash lock checks against."""
+    # The callers have already checked the tags (and turned a refusal into a message); this just records them.
+    tags, _ = resolve_tags(qs, business["name"], business["domain"])
     run_id = create_run(conn, business=business, checkpoint=checkpoint)
     write_journal(
         business_id=business["id"], entry_type="probe_started", actor=ACTOR,
@@ -147,9 +150,9 @@ def start_run(conn: psycopg.Connection, *, business: dict, qs, checkpoint: str |
         details={"probe_run_id": str(run_id), "question_set_version": qs.version,
                  "question_set_sha256": qs.fingerprint, "checkpoint": checkpoint, "engines": engines,
                  "profile_id": business["profile_id"], "profile_version": business["profile_version"],
-                 # The tags as they were when the run started, so the report can split targets from control
-                 # without needing the question-set file (which a person may have moved).
-                 "questions": [{"text": q.text, "intent": q.intent, "is_target": q.is_target} for q in qs.items],
+                 # The tags as they were when the run started, so the report can split targets from control and
+                 # discovery from brand without needing the question-set file (which a person may have moved).
+                 "questions": tags,
                  "started_by": operator_name(),
                  "answers_expected": answers_expected, "capture": how, **(extra or {})})
     return run_id

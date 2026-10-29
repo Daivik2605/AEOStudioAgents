@@ -101,6 +101,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "ai.col.verdict": "Reading",
         "ai.no_range": "no range: too few questions",
         "ai.denominators": "Two ways of counting are shown: out of all answers, and out of only the answers that named at least one business. In {mentioned} answers the business was named but not recommended. For {unknown} answers we could not tell whether the AI searched the web.",
+        "ai.discovery_only": "These figures come from {questions} questions where the customer does not know your business name ({answers} answers). Questions that name your business ({brand_questions}) are kept out of them, because AI always mentions a business it is asked about by name.",
+        "ai.recognition": "When asked about your business by name, AI recognised it in {value} of answers (95% range {low} to {high}; {num} of {den} answers).",
         "ai.accuracy_missing": "Accuracy is not shown: it needs facts confirmed by you in the truth document.",
         "ai.change_note": "A change is called \"real change\" only if its range does not include zero; otherwise it is \"within the noise\".",
         "ai.points": "{value} points",
@@ -211,7 +213,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "measure.recommendation_among_named": "Recommended, counting only answers that name at least one business",
         "measure.gap": "Answers that name a competitor but not you",
         "measure.retrieval": "Answers where the AI searched the web first",
-        "measure.accuracy": "Facts stated correctly (of those we could check)",
+        "measure.accuracy": "Facts stated correctly, in all answers (of those we could check)",
+        "measure.accuracy_brand": "Facts stated correctly when asked about your business by name",
         # ---- AI summaries --------------------------------------------------------------------------------------
         "ai.summary_label": "Written by an AI assistant from the figures in this section, and checked by a person before sending.",
         # ---- checkpoint names, in the client's words (step 22b) -------------------------------------------------

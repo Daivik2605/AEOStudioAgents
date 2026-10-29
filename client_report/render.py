@@ -251,6 +251,13 @@ def ai_today(c: Ctx, d: dict) -> str:
     out.append(f"<p class='small'>{E(c.t('chart.whisker'))}</p>")
     out.append(_headline_table(c, h))
     out.append(f"<p class='small'>{E(c.t('ai.denominators', mentioned=h['mentioned_only'], unknown=h['retrieval_unknown']))}</p>")
+    mix, brand = d.get("question_mix"), d.get("brand")
+    if mix:    # reports saved before the two kinds of question existed do not have it
+        out.append(f"<p class='small'>{E(c.t('ai.discovery_only', questions=mix['discovery_questions'], answers=mix['discovery_answers'], brand_questions=mix['brand_questions']))}</p>")
+    if brand and brand["available"]:
+        r = brand["recognition"]
+        if r["value"] is not None and r["low"] is not None:
+            out.append(f"<p>{E(c.t('ai.recognition', value=f'{r['value']:.0f}%', low=f'{r['low']:.0f}%', high=f'{r['high']:.0f}%', num=r['num'], den=r['den']))}</p>")
     if "accuracy" not in h["measures"]:
         out.append(f"<p class='small'>{E(c.t('ai.accuracy_missing'))}</p>")
     out.append(_tv_now(c, d["targets_vs_control"]))

@@ -25,7 +25,7 @@ from audit import store
 from audit.cost_gate import confirm_cost
 from audit.derive import EXTRACT, DeriveReport, derive_run
 from audit.manual import ACTOR, ENGINES, AuditError
-from audit.question_set import QuestionSet, QuestionSetError, check_not_edited, load_question_set
+from audit.question_set import QuestionSet, QuestionSetError, check_not_edited, load_question_set, resolve_tags
 from audit.sources import merge_sources, parse_link
 from audit.summary import build_summary
 from core import client_files
@@ -142,6 +142,7 @@ def generate_fill_in(business_id: str, question_set_path: str, *, checkpoint: st
             raise AuditError("this business has no profile row (run `aeo add` to create one)")
         try:
             check_not_edited(conn, qs)
+            _, tag_warnings = resolve_tags(qs, business["name"], business["domain"])
         except QuestionSetError as exc:
             raise AuditError(str(exc)) from exc
 
@@ -161,7 +162,7 @@ def generate_fill_in(business_id: str, question_set_path: str, *, checkpoint: st
         conn.close()
 
     return GenerateResult(path=paths["md"], probe_run_id=str(run_id),
-                          blocks=total, warnings=qs.target_warnings())
+                          blocks=total, warnings=qs.target_warnings() + tag_warnings)
 
 
 # ---- reading the sheet --------------------------------------------------------

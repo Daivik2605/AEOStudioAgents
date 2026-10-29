@@ -10,14 +10,14 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 
 from audit import store
-from audit.report_data import (MEASURES, ReportError, _block, _share_of_voice, _sources, answer_counts, design_label,
-                               engine_label, load_answers, select_run)
+from audit.report_data import (ACCURACY_MEASURES, MEASURES, ReportError, _block, _headline_block, _share_of_voice, _sources, answer_counts,
+                               design_label, engine_label, load_answers, question_types, select_run)
 from compare.errors import CompareError
 from scoring import bootstrap, scoring
 
 DETECTION_FLOOR_POINTS = 20
 MEASURE_ORDER = ["visibility", "recommendation", "brand_free", "visibility_among_named",
-                 "recommendation_among_named", "gap", "retrieval", "accuracy"]
+                 "recommendation_among_named", "gap", "retrieval", "accuracy", "accuracy_brand"]
 TARGET_MEASURES = ["visibility", "recommendation", "gap"]
 MOVERS = 5
 REAL, NOISE, NO_RANGE = "real change", "within the noise", "no range (too few questions)"
@@ -56,9 +56,17 @@ def load_side(conn, business_id: str, label: str, given: str | None) -> tuple[di
     profile = store.load_business_and_profile(conn, business_id, chosen["profile_id"])
     planned = started.get("questions") or []
     questions = list(dict.fromkeys(a["question"] for a in answers))
+    # Discovery or brand, as the report works it out. Visibility and the rest are compared on discovery questions only.
+    types = question_types(planned, questions, profile or {"name": None, "domain": None})
+    discovery = [a for a in scored if types[a["question"]]["type"] == "discovery"]
+    if not discovery:
+        raise CompareError(f"run {chosen['id']} has no discovery question (one that does not name the client) with a read "
+                           "answer, so visibility cannot be compared. Brand questions measure recognition and accuracy only.")
     engines = list(started.get("engines") or []) + [e for e in dict.fromkeys(a["engine"] for a in answers)
                                                     if e not in (started.get("engines") or [])]
     return {"run": chosen, "started": started, "answers": answers, "scored": scored, "questions": questions,
+            "types": types, "discovery": discovery,
+            "brand": [a for a in scored if types[a["question"]]["type"] == "brand"],
             "targets": {q["text"] for q in planned if q.get("is_target")}, "tags_recorded": bool(planned),
             "planned_texts": {q["text"] for q in planned},
             "engines": engines, "repeats": int(started.get("repeats") or 1),
@@ -113,10 +121,21 @@ def _summary(side: dict) -> dict:
 
 def _headline(a: dict, b: dict, with_accuracy: bool) -> dict:
     questions = sorted(set(a["questions"]) | set(b["questions"]))
-    block_a, block_b = _block(a["scored"], with_accuracy=with_accuracy), _block(b["scored"], with_accuracy=with_accuracy)
-    names = [m for m in MEASURE_ORDER if m in block_a["measures"]]
-    units_a, units_b = _units(a["scored"], questions), _units(b["scored"], questions)
-    ranges = bootstrap.paired_ranges(units_a, units_b, {m: MEASURES[m][0] for m in names})
+    block_a = _headline_block(a["discovery"], a["scored"], a["brand"], with_accuracy=with_accuracy)
+    block_b = _headline_block(b["discovery"], b["scored"], b["brand"], with_accuracy=with_accuracy)
+    names = [m for m in MEASURE_ORDER if m in block_a["measures"] and m in block_b["measures"]]
+    # Same rule as the audit report: discovery questions only, except accuracy, which covers every answer that
+    # named the client. Each group gets its own paired resampling over its own questions.
+    discovery_q = [q for q in questions if a["types"].get(q, {}).get("type") == "discovery"]
+    ranges = bootstrap.paired_ranges(_units(a["discovery"], discovery_q), _units(b["discovery"], discovery_q),
+                                     {m: MEASURES[m][0] for m in names if m not in ACCURACY_MEASURES})
+    if "accuracy" in names:
+        ranges |= bootstrap.paired_ranges(_units(a["scored"], questions), _units(b["scored"], questions),
+                                          {"accuracy": MEASURES["accuracy"][0]})
+    if "accuracy_brand" in names:
+        brand_q = [q for q in questions if a["types"].get(q, {}).get("type") == "brand"]
+        ranges |= bootstrap.paired_ranges(_units(a["brand"], brand_q), _units(b["brand"], brand_q),
+                                          {"accuracy_brand": MEASURES["accuracy_brand"][0]})
     measures = {}
     for m in names:
         va, vb = block_a["measures"][m], block_b["measures"][m]
@@ -129,7 +148,7 @@ def _headline(a: dict, b: dict, with_accuracy: bool) -> dict:
     return {"measures": measures, "tier_a": block_a["tier"], "tier_b": block_b["tier"],
             "mentioned_only": {"a": block_a["mentioned_only"], "b": block_b["mentioned_only"]},
             "retrieval_unknown": {"a": block_a["retrieval_unknown"], "b": block_b["retrieval_unknown"]},
-            "questions": len(questions)}
+            "questions": len(questions), "discovery_questions": len(discovery_q)}
 
 
 def _targets_vs_control(a: dict, b: dict) -> dict:
@@ -138,7 +157,7 @@ def _targets_vs_control(a: dict, b: dict) -> dict:
         return {"available": False, "reason": f"run {who} did not record which questions are targets, so targets and control cannot be told apart"}
     if a["targets"] != b["targets"]:
         return {"available": False, "reason": "the two runs mark different questions as targets, so there is no single target group to compare"}
-    questions = sorted(set(a["questions"]) | set(b["questions"]))
+    questions = sorted(q for q in set(a["questions"]) | set(b["questions"]) if a["types"].get(q, {}).get("type") == "discovery")
     target_q = [q for q in questions if q in a["targets"]]
     control_q = [q for q in questions if q not in a["targets"]]
     if not target_q:
@@ -147,7 +166,7 @@ def _targets_vs_control(a: dict, b: dict) -> dict:
         return {"available": False, "reason": "every question is marked as a target, so there is no control"}
 
     def split(side, qs):
-        return _units(side["scored"], qs)
+        return _units(side["discovery"], qs)
     stats = {m: MEASURES[m][0] for m in TARGET_MEASURES}
     found = bootstrap.paired_difference_ranges((split(a, target_q), split(b, target_q)),
                                                (split(a, control_q), split(b, control_q)), stats)
@@ -205,7 +224,7 @@ def _client_row(scored: list[dict]) -> dict | None:
 
 
 def _share_of_voice_change(a: dict, b: dict) -> dict:
-    ca, cb = _business_counts(a["scored"]), _business_counts(b["scored"])
+    ca, cb = _business_counts(a["discovery"]), _business_counts(b["discovery"])
     moves = []
     for k in set(ca) | set(cb):
         ra, rb = ca.get(k), cb.get(k)
@@ -216,8 +235,8 @@ def _share_of_voice_change(a: dict, b: dict) -> dict:
             moves.append({"name": (rb or ra)["name"], "a": before, "b": after, "change": after - before})
     gained = sorted([m for m in moves if m["change"] > 0], key=lambda m: (-m["change"], m["name"].casefold()))[:MOVERS]
     lost = sorted([m for m in moves if m["change"] < 0], key=lambda m: (m["change"], m["name"].casefold()))[:MOVERS]
-    return {"client": {"a": _client_row(a["scored"]), "b": _client_row(b["scored"])},
-            "scored_answers": {"a": len(a["scored"]), "b": len(b["scored"])},
+    return {"client": {"a": _client_row(a["discovery"]), "b": _client_row(b["discovery"])},
+            "scored_answers": {"a": len(a["discovery"]), "b": len(b["discovery"])},
             "gained": gained, "lost": lost,
             "note": "Counts of answers, not rates. A move of a few answers is within the noise."}
 
@@ -269,6 +288,10 @@ def _question_list(side: dict) -> dict:
                                               for i, t in enumerate(side["questions"], start=1)]}
 
 
+def _discovery_answers(side: dict) -> list[dict]:
+    return [x for x in side["answers"] if side["types"][x["question"]]["type"] == "discovery"]
+
+
 def compare_audits(a: dict, b: dict, domain: str, label_a: str, label_b: str) -> dict:
     check_comparable(a, b, label_a, label_b)
     with_accuracy = bool(a["facts"]) and bool(b["facts"])
@@ -286,7 +309,7 @@ def compare_audits(a: dict, b: dict, domain: str, label_a: str, label_b: str) ->
         "share_of_voice": _share_of_voice_change(a, b),
         "wrong_facts": _wrong_facts(a, b),
         "sources": {"client_domain": domain,
-                    "a": {k: v for k, v in _sources(a["answers"], domain).items() if k in ("answers", "answers_with_sources", "client_cited_in")},
-                    "b": {k: v for k, v in _sources(b["answers"], domain).items() if k in ("answers", "answers_with_sources", "client_cited_in")}},
+                    "a": {k: v for k, v in _sources(_discovery_answers(a), domain).items() if k in ("answers", "answers_with_sources", "client_cited_in")},
+                    "b": {k: v for k, v in _sources(_discovery_answers(b), domain).items() if k in ("answers", "answers_with_sources", "client_cited_in")}},
         "failed_extractions": {"a": len(a["answers"]) - len(a["scored"]), "b": len(b["answers"]) - len(b["scored"])},
     }

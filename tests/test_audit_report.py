@@ -45,14 +45,15 @@ def conn():
 
 
 def build_run(biz, specs, *, questions, targets=(), engines=("chatgpt", "perplexity"), repeats=1, status="complete",
-              checkpoint="before", operator="Sam", expected=None):
+              checkpoint="before", operator="Sam", expected=None, tags=None):
     """Writes one audit run straight into the database. Each spec is one answer:
     {q: question index, e: engine, r: repeat, named: list or None (None = extraction failed), claims, searched, text, sources}."""
     conn = get_connection()
     try:
         profile = store.load_business_and_profile(conn, biz["id"])
         qs = QuestionSet(version=f"rep{uuid.uuid4().hex[:8]}_v1", fingerprint=uuid.uuid4().hex,
-                         items=[Question(text=t, intent="commercial", is_target=i in targets) for i, t in enumerate(questions)])
+                         items=[Question(text=t, intent="commercial", is_target=i in targets, **(tags or {}).get(i, {}))
+                                for i, t in enumerate(questions)])
         run_id = store.start_run(conn, business=profile, qs=qs, checkpoint=checkpoint, engines=list(engines),
                                  answers_expected=expected or len(questions) * len(engines) * repeats,
                                  how="fill_in_file", extra={"repeats": repeats})
@@ -442,9 +443,12 @@ def test_reasons_are_quoted_and_counted(snap, tmp_path):
     assert "- “serves all of Canada” — 2 answer(s)" in md
 
 
-def test_the_clients_descriptor_words_are_counted(snap, tmp_path):
-    words = {w["word"]: w["answers"] for w in report(snap, tmp_path).data["descriptors"]["words"]}
-    assert words == {"premium": 3, "montreal-based": 1}
+def test_descriptor_words_come_from_brand_questions_only(snap, tmp_path):
+    # Every question in this snapshot is a discovery question, so no word is collected even though the client was
+    # described in some answers. The counting of words from brand answers is tested in test_question_types.py.
+    res = report(snap, tmp_path)
+    assert res.data["descriptors"]["words"] == []
+    assert "because this run asked no brand questions" in res.md_path.read_text()
 
 
 # ---- wrong facts -------------------------------------------------------------------------------------------------------------------------

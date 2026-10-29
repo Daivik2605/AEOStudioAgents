@@ -16,7 +16,7 @@ from audit.sources import merge_sources, parse_link
 from audit.summary import build_summary
 from audit.cost_gate import confirm_cost
 from audit.derive import EXTRACT, DeriveReport, derive_run
-from audit.question_set import QuestionSetError, check_not_edited, load_question_set
+from audit.question_set import QuestionSetError, check_not_edited, load_question_set, resolve_tags
 from core.checkpoints import CheckpointError, check_checkpoint
 from core.db import get_connection
 from core.journal import write_journal
@@ -69,13 +69,14 @@ def run_manual_audit(business_id: str, question_set_path: str, *, checkpoint: st
             raise AuditError("this business has no profile row (run `aeo add` to create one)")
         try:
             check_not_edited(conn, qs)
+            _, tag_warnings = resolve_tags(qs, business["name"], business["domain"])
         except QuestionSetError as exc:
             raise AuditError(str(exc)) from exc
 
         pairs = [(q, e) for q in qs.questions for e in ENGINES]
         say(f"\nManual audit for {business['name'] or business['domain']}")
         say(f"Question set {qs.version}: {len(qs.questions)} questions x {len(ENGINES)} engines = {len(pairs)} answers.")
-        warnings = qs.target_warnings()
+        warnings = qs.target_warnings() + tag_warnings
         for w in warnings:
             say(f"WARNING: {w}")
         if warnings:
