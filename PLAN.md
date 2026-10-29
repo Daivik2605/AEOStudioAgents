@@ -1,6 +1,6 @@
 # AEOStudioAgents — Plan
 
-**Version 4.8 · 18 October 2026.** Changes since 4.5 are in the changelog at the end.
+**Version 4.9 · 29 October 2026.** Changes since 4.5 are in the changelog at the end.
 
 Read this file before doing anything in this repository. It is the source of truth. When a decision is not covered here, ask rather than assume.
 
@@ -74,6 +74,16 @@ This is the commercial flow. Everything in the repo serves it.
 **The deposit moved.** In v3.2 the audit was free, given to prospects to win them. It is now paid work, because in manual mode it is hours of a person's time. The free hook is the diagnosis, which costs us nothing.
 
 **Most diagnosis fixes also help ordinary SEO.** Say so in the pitch — it widens the sale and it is true.
+
+### Prototype phases A / B / C (v4.9)
+
+The prototype has to run, for any business, in three phases. Anything specific to one client or one vendor is deferred (§13).
+
+| Phase | When | Commands |
+|---|---|---|
+| **A. Before we land them** | Prospect: free or nearly free | `aeo add` · `aeo diagnose` · spot check (brand questions asked once on each engine, §10) · `aeo dossier` · `aeo client-report` (starting point) · `aeo status` |
+| **B. After we land them** | Client: the paid work | `aeo truth draft` / `import` · `aeo questions draft` · `aeo audit` / `audit import` / `audit report` · `aeo recommend` · `aeo brief` · `aeo log` · `aeo event` · `aeo evidence add` / `list` · `aeo timeline` |
+| **C. Showcasing results** | After the client deploys and the engines re-read | `aeo compare` · `aeo client-report` (work done, results, quarterly check) |
 
 ### Engagement types (v4.7)
 
@@ -583,29 +593,35 @@ Now: Postgres in Docker on Daivik's Mac, files in `clients/` on the Mac. With th
 | 13 | **Truth document** — `aeo truth draft` (questionnaire pre-filled from the diagnosis) + `aeo truth import` (confirmed facts + story → new profile version). Replaces the v4.4 "client facts file" | ✅ Done (migration 018: `facts` + `story` on `business_profiles`, saved versions can't be edited or deleted). Follow-up: map confirmed facts into the columns the diagnose render check reads |
 | 15 | Audit report output (scores with ranges, share of voice, reasons, wrong facts) | ✅ Done. No AI; bootstrap ranges resample questions (seed in config.yaml); snapshot shows overall figures only; partial reports never save scores. Not yet seen on a real run |
 | 19 | **`aeo recommend`** — fix files (robots.txt, llms.txt, JSON-LD from confirmed facts only) + the ordered fix list with platform routing from data. No AI | ✅ Done (migration 019; two audit finding codes added). Follow-ups: ask for the address in parts (street, city, province, postal code) in the truth document so JSON-LD can use structured fields; merge `recommend/platforms.yaml` with `diagnose/platform_data.py`; store the CDN on the diagnosis instead of inferring it |
-| 19b | **Draft validator** — `aeo recommend check-draft`: mechanical citability checks + the one AI "distinctive" check behind the cost gate. Split out of 19 in v4.7 | |
 | 20 | **Compare** — moved up in v4.7. Any two checkpoints: diagnosis findings closed/open/new by code, audit numbers side by side | ✅ Done. Paired bootstrap; "real change" only when the range of the difference excludes zero; refuses mismatched question sets/designs; lists work and events in between. No AI, no DB write |
 | 22 | **Client report** — one designed HTML file (prints to PDF) per stage: starting point, work done, results, quarterly check. Python builds numbers and tables; AI writes only short summaries; only client-visible evidence; numbered versions; saves the data it used so it can be rebuilt identically | ✅ Done. Data from the same functions as report/compare/recommend; AI summaries rejected if they contain a number not in the data or promise an outcome; `--no-ai`; `--from-json` rebuilds byte-identical. Not yet opened in a browser or printed |
 | 22b | **Client wording** — client sentence + fix title for every finding code, plain checkpoint/platform/evidence labels, "Fixed by the new website", honest "N of M closed · K new" headline, §6 sentence only when an audit backs it, no forced page breaks | ✅ Done. Not yet seen on O'land's real report |
 | 22c | **Honest "closed"** — a finding whose subject no longer exists is not "closed". When B has no structured data, every schema finding from A is "gone with the old structured data — not yet replaced", not "fixed". Each finding code declares what it depends on (e.g. all `SCHEMA_*` depend on JSON-LD existing). Compare, client report and timeline use three outcomes: fixed · no longer applies (subject removed) · still open. O'land's "8 of 9 closed" is really 2 fixed, 6 removed with the old schema | ✅ Done (DEPENDS_ON in codes.py; four outcomes; `closed` kept as an alias of fixed) |
-| 22d | **Two kinds of question** (§8): every question is `discovery` (brand-free — the buyer doesn't know the client) or `brand` (names the client, with or without the URL). Visibility, recommendation rate, share of voice and gap are computed on **discovery questions only**; brand questions feed recognition and accuracy only. Each question also carries `length` (short · medium · long) and `language`. Reports show results by length and language | ✅ Done. Loader accepts type/length/language/control/spot_check; a discovery question naming the client is refused at audit start; untagged types are derived and the report says so. Audit report and compare measure visibility, recommendation, gap and share of voice on discovery only; accuracy still covers every answer that named the client; recognition (brand) added to the audit report; by-length and by-language tables for the 32×2×3 design. Compare does not show a recognition change yet. The dossier still reads the YAML with its own forgiving reader |
+| 22d | **Two kinds of question** (§8): every question is `discovery` (brand-free — the buyer doesn't know the client) or `brand` (names the client, with or without the URL). Visibility, recommendation rate, share of voice and gap are computed on **discovery questions only**; brand questions feed recognition and accuracy only. Each question also carries `length` (short · medium · long) and `language`. Reports show results by length and language | ✅ Done. Built: visibility, recommendation rate, share of voice and gap on **discovery questions only**; **recognition** on brand questions; **accuracy two ways** — brand questions only, and overall including brand mentions; **descriptions of the client from brand questions only**; loader accepts `type`/`length`/`language`/`control`/`spot_check`; a discovery question that names the client is refused at audit start; untagged types are derived and the report says so; results by length and language for the 32×2×3 design. **Open follow-up:** compare does not show a recognition change yet. The dossier still reads the YAML with its own forgiving reader |
 | 22e | **Baseline dossier** — `aeo dossier --business <b>`: the internal, before-work document (§10). Everything we know before work starts, assembled from the database and evidence; gaps listed as "not yet collected" | ✅ Done. No AI. Hand-written text lives in `clients/<domain>/dossier_notes.md`, never overwritten. Evidence types added: search_console, analytics, bing_wmt, gbp, site_move. Spot-check table is internal only |
 | 22f | **Dossier design pass** — cover summary (status tiles, key numbers), linked index, status and severity chips, consistent cards, print-ready. Internal look, professional finish | ✅ Done. Cover tiles, linked index, chips with text + glyph, `aeo dossier --from-json`. Print header/footer needs Chrome 131+ |
-| 25b | **AI crawler report from Cloudflare** — with a read-only API token from the client (or our own account): per-bot requests by day, allowed vs blocked, status codes, most-requested pages, the exact 404 paths (feeds the redirect list), and which important pages each AI search bot fetched in the last 30 days. Saved per checkpoint, compared before/after. Falls back to a client screenshot or export with no access | |
-| | **After the core path** | |
-| 12 | **`aeo status`** — change status with a required reason (§7). The decline flow already tells people to use it | |
-| 13b | **`aeo questions draft`** — AI drafts candidate buyer questions from the truth document + diagnosis (§16); a person picks and freezes | |
-| 14 | **`aeo guide`** — plain-language list of every command, when to use it, in what order | |
-| 16 | `aeo show` (one business's history in plain sentences) + `aeo export` (context pack for Claude) | |
-| 17 | `aeo backup` + Supabase move (see §16) | |
+| | | **Prototype — a working loop for any business, in this order (re-scoped 29 Oct 2026, v4.9)** | |
+| 12 | **`aeo status`** — change status with a required reason (§7). The decline flow already tells people to use it | ⏭ Next |
+| 25 | **Diagnose additions, generic parts only:** **sitemap check** (a missing or 404 sitemap is a finding — O'land's new site had none at the apex on 15 Oct, which the diagnosis did not flag); **apex/www consistency** (both must serve the same site, or one must 301 to the other); **CDN/host detection from response headers**; **optional old-site redirect check** (fetch the old site's sitemap, confirm every old URL redirects) | |
+| 13b | **`aeo questions draft`** — AI drafts candidate buyer questions from the truth document + diagnosis (§16); a person picks and freezes. Also suggests an 8-question spot-check subset | |
+| 17a | **`aeo backup`**, local only — dump the database to the backup folder (§16) | |
 | 18 | **`aeo brief`** — citation aggregation, content brief + outreach list | |
+| 14 | **`aeo guide`** — plain-language runbook of the three prototype phases (A / B / C, §2): every command, when to use it, in what order | |
+| 27 | **Real-data trial** — Phase A on O'land plus 3 unrelated businesses; fix what breaks | |
+| | | **Deferred — specific to one client or one vendor** | |
+| 25b | **AI crawler report from Cloudflare** — with a read-only API token from the client (or our own account): per-bot requests by day, allowed vs blocked, status codes, most-requested pages, the exact 404 paths (feeds the redirect list), and which important pages each AI search bot fetched in the last 30 days. Saved per checkpoint, compared before/after. Falls back to a client screenshot or export with no access. **Until built: screenshot + `aeo evidence add`** | |
+| 19b | **Draft validator** — `aeo recommend check-draft`: mechanical citability checks + the one AI "distinctive" check behind the cost gate. Split out of 19 in v4.7 | |
+| — | **§14 O'land open items** — client work, not build | |
+| | | **Later — scale and convenience** | |
+| 16 | `aeo show` (one business's history in plain sentences) + `aeo export` (context pack for Claude) | |
+| 17b | **Supabase move** (see §16) — split out of 17 in v4.9 | |
 | 21 | Frontend + hosting (see §16) | |
 | 23 | **Explain budget** — every command ends with "what this means / what to do next"; runs without asking under `AEO_EXPLAIN_BUDGET` per command; Python supplies every number and the next step, AI only words them; saved into the report | |
 | 24 | **`aeo next`** + checklist — the next step for a business from its saved progress and engagement type; manual checks (Cloudflare, Bing WMT, redirects) ticked with `aeo check … --note` | |
-| 25 | **Diagnose additions** — CDN/host detection from response headers; migration check (fetch the old site's sitemap, confirm every old URL redirects); **sitemap check** (missing or 404 sitemap is a finding — O'land's new site had none at the apex on 15 Oct, which the diagnosis did not flag); **host consistency** (apex and www must serve the same site or one must 301 to the other) | |
 | 26 | **AEO Studio Coach** — a Claude skill + one Claude Project per client (§16) | |
+| — | **Batch mode** — engine APIs behind a cost card; only after manual has run cleanly ten times (§3.2, §15) | |
 
-**Build in the order listed, not by number.** Step numbers are kept so old references still work. The core path is what the product exists for, and what justifies the price: diagnose → audit → report → the fix list → evidence of the work → compare → the client report. Question sets are written by hand for now; `aeo questions draft` (13b) comes later. `aeo recommend` names off-site work in general terms until `aeo brief` (18) exists.
+**Build in the order listed, not by number.** Step numbers are kept so old references still work. The core path is what the product exists for, and what justifies the price: diagnose → audit → report → the fix list → evidence of the work → compare → the client report. Question sets are still written by hand until `aeo questions draft` (13b) is built; 13b is in the Prototype group. `aeo recommend` names off-site work in general terms until `aeo brief` (18) exists.
 
 Stop after each step for review. Do not build ahead.
 
@@ -749,5 +765,7 @@ Every journal entry records the person, not the script: `AEO_OPERATOR=daivik` (o
 - **14 Oct 2026 — v4.7.** Storage rewritten (§10): the database is the record; files are **evidence** (kept forever) or **generated** (rebuildable), in `clients/<domain>/evidence|generated`, date-named, no stage folders. Checkpoints become four fixed labels for every client — `before` · `after_site` · `after_aeo` · `check`; O'land's `old_site` → `before`, `new_site_no_aeo` → `after_site`. Engagement types A–F and access level added (§2). Evidence records with eight fields and a client-visible flag; `aeo log`, `aeo event`, `aeo timeline`. Core path now: **13c storage/evidence/work log (first, so everything after writes into the new layout)** → truth document → audit report → recommend → **compare (moved up)** → **client report (new)**. Later: explain budget, `aeo next` + checklist, CDN detection + migration redirect check, AEO Studio Coach.
 
 - **18 Oct 2026 — v4.8.** Found on O'land's first real client report: "8 of 9 closed" counted six structured-data findings as closed because the new site has no structured data at all — new step 22c separates fixed from no-longer-applies. Two kinds of question (§8): discovery vs brand, never mixed; visibility on discovery only; length and language tagged (22d). Baseline dossier and evidence catalogue (§10, step 22e). Writing rules for questions.
+
+- **29 Oct 2026 — v4.9.** Re-scoped to a working prototype that runs for any business in three phases: **A** before we land them (add, diagnose, spot check, dossier, starting-point report, status), **B** after we land them (truth document, questions, audits, report, recommend, brief, work log, evidence), **C** showcasing results (compare, client report). Anything specific to one client or one vendor is deferred. §2 gains the phase block; §13 is regrouped into Prototype / Deferred / Later with every step number and ✅ row kept. Prototype, in order: 12 `aeo status` (next) · 25 diagnose additions, generic parts only · 13b `aeo questions draft` (+ 8-question spot-check subset) · 17a local `aeo backup` · 18 `aeo brief` · 14 `aeo guide` · 27 real-data trial (Phase A on O'land plus 3 unrelated businesses). Deferred: 25b Cloudflare crawler report (fallback: screenshot + `aeo evidence add`), 19b draft validator, §14 O'land items. Later: 16, 17b Supabase move (split from 17), 21, 23, 24, 26, batch mode. Step 22d row now records what was built (discovery-only visibility, recognition, accuracy brand-only and overall, descriptions from brand questions only) and its open follow-up (compare shows no recognition change yet).
 
 *Changes to this plan are deliberate and dated.*
