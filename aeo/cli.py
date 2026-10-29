@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import textwrap
+from datetime import timezone
 from pathlib import Path
 from typing import Optional
 
@@ -19,7 +20,7 @@ from compare.run import CompareError, make_comparison
 from recommend.run import RecommendError, make_recommendations
 from recommend.robots_file import TRAINING_MODES
 from audit.summary import summary_lines
-from core import client_files, evidence as ev, files_migrate, timeline as tl
+from core import client_files, evidence as ev, files_migrate, status as st, timeline as tl
 from core.businesses import (ACCESS_LEVELS, ENGAGEMENT_TYPES, BusinessError, add_with_checks, get_engagement,
                              resolve_business, set_engagement)
 from core.checkpoints import CHECKPOINTS, CheckpointError, check_checkpoint
@@ -118,7 +119,7 @@ def diagnose(
             typer.echo("Business was already 'declined'; status left as it is.")
         elif out.decline_result == "not_a_prospect":
             typer.secho("Status NOT changed: this business is not a prospect, so declining it is your decision. "
-                        "Use: aeo status --business <id> declined --reason \"...\"", fg=typer.colors.YELLOW)
+                        f"Use: aeo status {business or '<domain>'} --set declined --reason \"...\"", fg=typer.colors.YELLOW)
         else:
             typer.echo("No business was given, so no status was changed.")
 
@@ -601,6 +602,72 @@ def show_timeline(
         conn.close()
     typer.echo(tl.render_timeline(b, items).rstrip())
     typer.echo(f"\nWritten: {timeline_path}\n         {work_path}")
+
+
+def _utc(when) -> str:
+    return when.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+@app.command("status")
+def business_status(
+    domain: Optional[str] = typer.Argument(None, help="The business's domain (an id or name also works)."),
+    set_to: Optional[str] = typer.Option(None, "--set", help="Change the status to: " + ", ".join(st.STATUSES) + "."),
+    reason: Optional[str] = typer.Option(None, "--reason", help="Why. Required for declined and rejected."),
+    all_businesses: bool = typer.Option(False, "--all", help="One table of every business."),
+    filter_status: Optional[str] = typer.Option(None, "--filter", help="With --all: only businesses with this status."),
+) -> None:
+    """Show or change a business's status. declined = we said no; rejected = they said no."""
+    if all_businesses:
+        if domain or set_to or reason:
+            _fail("--all shows every business; do not combine it with a domain, --set or --reason")
+        conn = get_connection()
+        try:
+            rows = st.list_statuses(conn, filter_status)
+        except st.StatusError as exc:
+            _fail(str(exc))
+        finally:
+            conn.close()
+        if not rows:
+            typer.echo("No businesses" + (f" with status {filter_status}." if filter_status else " yet."))
+            return
+        width = max(len(r["domain"]) for r in rows + [{"domain": "Domain"}])
+        typer.echo(f"{'Domain':<{width}}  {'Status':<10}  {'Engagement type':<16}  Last changed")
+        for r in rows:
+            typer.echo(f"{r['domain']:<{width}}  {r['status']:<10}  {(r['engagement_type'] or '-'):<16}  {_utc(r['last_changed'])}")
+        return
+
+    if filter_status:
+        _fail("--filter goes with --all (aeo status --all --filter declined)")
+    if not domain:
+        _fail("give a domain (aeo status example.com) or --all")
+    if reason and not set_to:
+        _fail("--reason goes with --set (aeo status example.com --set declined --reason \"...\")")
+    b = _find_business(domain)
+    conn = get_connection()
+    try:
+        if set_to:
+            try:
+                result = st.set_status(conn, b["id"], set_to, reason=reason, operator=operator_name())
+            except st.StatusError as exc:
+                _fail(str(exc))
+            for w in result.warnings:
+                typer.secho(f"Warning: {w}", fg=typer.colors.YELLOW, err=True)
+            if not result.changed:
+                typer.echo(f"{b['domain']} is already {result.new}. Nothing changed.")
+                return
+            typer.echo(f"{b['domain']}: {result.old} -> {result.new}.")
+            return
+        info = st.get_status(conn, b["id"])
+    finally:
+        conn.close()
+    typer.echo(f"{b['domain']}: {info['status']}")
+    if info["set_at"]:
+        typer.echo(f"Set {_utc(info['set_at'])} by {info['set_by']}")
+    if info["reason"]:
+        typer.echo(f"Reason: {info['reason']}")
+    typer.echo("\nHistory, newest first:")
+    for h in info["history"]:
+        typer.echo(f"  {_utc(h['set_at'])}  {h['status']:<10}  {h['set_by']}" + (f"  {h['reason']}" if h["reason"] else ""))
 
 
 files_app = typer.Typer(add_completion=False, no_args_is_help=True, help="Move files between layouts.")

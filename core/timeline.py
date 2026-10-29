@@ -58,6 +58,11 @@ def collect_timeline(conn, business_id: str) -> list[dict]:
             items.append({"id": str(id_), "when": when, "kind": "evidence", "label": checkpoint,
                           "text": f"Evidence: {path} ({'; '.join(bits)})" + (f". {note}" if note else "")})
 
+        # Who set a status, and why, lives in status_history. Both rows are written in one transaction, so they
+        # share the same instant and a status change is matched on (new status, time).
+        cur.execute("SELECT status, set_at, set_by, reason FROM status_history WHERE business_id = %s", (business_id,))
+        status_notes = {(status, at): (by, reason) for status, at, by, reason in cur.fetchall()}
+
         cur.execute("SELECT id, created_at, entry_type, description, actor, details FROM client_journal "
                     "WHERE business_id = %s AND entry_type IN ('work', 'event', 'status_change')", (business_id,))
         for id_, when, entry_type, description, actor, details in cur.fetchall():
@@ -66,6 +71,12 @@ def collect_timeline(conn, business_id: str) -> list[dict]:
             extra = ""
             if entry_type == "work":
                 extra = (f" [{details['finding']}]" if details.get("finding") else "")
+            if entry_type == "status_change":
+                by, reason = status_notes.get((details.get("to"), when), (None, None))
+                if reason:
+                    description += f": {reason}"
+                if by and not by.startswith("system"):
+                    description += f" ({by})"
             items.append({"id": str(id_), "when": when, "kind": kind,
                           "label": (details.get("checkpoint") or "") if entry_type == "work" else "",
                           "text": f"{description}{extra} ({actor})" if entry_type != "status_change" else description})

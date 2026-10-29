@@ -2,7 +2,7 @@
 
 Journal rows go through core/journal.write_journal (the only function allowed
 to write client_journal). The decline flow uses the same method `aeo status`
-will use (PLAN.md section 7): update businesses.status, let the existing
+uses (core/status.py, PLAN.md section 7): update businesses.status, let the existing
 trigger write the status_change row, then add a `note` linked to it.
 """
 
