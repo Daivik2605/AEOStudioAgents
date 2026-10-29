@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 import textwrap
 from datetime import timezone
@@ -31,6 +32,9 @@ from truth.importer import TruthImportAborted, TruthImportError, TruthImportRefu
 from diagnose import platform_data as pd
 from diagnose.report import decline_pitch_outline
 from diagnose.run import DiagnoseError, run_diagnosis
+from questions_draft import plan as qplan
+from questions_draft import run as qdraft
+from questions_draft.run import DraftError
 
 TERMINAL_WIDTH = 100   # findings are wrapped to fit a normal terminal
 
@@ -732,6 +736,43 @@ def files_migrate_cmd(
 
 
 # ---- the truth document (PLAN.md section 16) ----------------------------------------------------------------
+
+questions_app = typer.Typer(add_completion=False, no_args_is_help=True,
+                            help="Questions to ask the AI assistants: AI drafts them, a person edits and freezes.")
+app.add_typer(questions_app, name="questions")
+
+
+@questions_app.command("draft")
+def questions_draft_cmd(
+    domain: str = typer.Argument(..., help="The business's domain (an id or name also works)."),
+    languages: Optional[str] = typer.Option(None, "--languages", help="Comma-separated codes, e.g. en,fr. Default: the language the site's page states, else en."),
+    size: int = typer.Option(qplan.DEFAULT_SIZE, "--size", help=f"How many questions in all ({qplan.MIN_SIZE} to {qplan.MAX_SIZE})."),
+    note: Optional[str] = typer.Option(None, "--note", help='Context for the drafter, e.g. "serves Quebec only". Not a source of facts.'),
+    yes: bool = typer.Option(False, "--yes", hidden=True),
+) -> None:
+    """Draft a first set of questions with AI, for a person to review. Costs a little: a cost card and a typed yes come first."""
+    if yes:
+        _fail("--yes is not supported: spending always needs a person to type yes at the cost card")
+    codes = None
+    if languages is not None:
+        codes = list(dict.fromkeys(c.strip().lower() for c in languages.split(",") if c.strip()))
+        bad = [c for c in codes if not re.fullmatch(r"[a-z]{2,3}", c)]
+        if not codes or bad:
+            _fail(f"--languages needs short codes separated by commas, like en,fr (got {languages!r})")
+    b = _find_business(domain)
+    conn = get_connection()
+    try:
+        result = qdraft.draft_questions(conn, b, languages=codes, size=size, note=note, ask=input, say=typer.echo)
+    except CostGateAborted:
+        raise typer.Exit(1)
+    except DraftError as exc:
+        _fail(str(exc))
+    finally:
+        conn.close()
+    for line in qdraft.summary_lines(result):
+        typer.echo(line)
+    typer.echo("\nThis is a draft. Review and edit it; freezing is a person's step (copy the reviewed file into question_sets/).")
+
 
 truth_app = typer.Typer(add_completion=False, no_args_is_help=True,
                         help="What is true about the business: facts the client confirms, and their story.")

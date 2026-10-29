@@ -26,12 +26,13 @@ aeo = "aeo.cli:app"
 [tool.setuptools]
 # aeo/ is the command-line entry point; core/, scoring/, diagnose/, audit/ and truth/ are the
 # code behind it.
-packages = ["aeo", "core", "scoring", "diagnose", "audit", "truth", "recommend", "compare", "client_report", "dossier"]
+packages = ["aeo", "core", "scoring", "diagnose", "audit", "truth", "recommend", "compare", "client_report", "dossier", "questions_draft"]
 
 [tool.setuptools.package-data]
 scoring = ["config.yaml"]
 core = ["model_prices.json"]
 recommend = ["platforms.yaml", "schema_types.yaml"]
+diagnose = ["infrastructure_rules.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

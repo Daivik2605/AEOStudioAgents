@@ -28,12 +28,15 @@ def stdin_is_tty() -> bool:
     return sys.stdin.isatty()
 
 
-def estimated_cost(calls: int, model: str) -> float:
-    return calls * estimate_cost(model, INPUT_TOKENS_PER_CALL, OUTPUT_TOKENS_PER_CALL)
+def estimated_cost(calls: int, model: str, tokens: tuple[int, int] | None = None) -> float:
+    """`tokens` is (input, output) per call, for a caller whose calls are not the audit's size. Default: the audit's."""
+    tokens_in, tokens_out = tokens or (INPUT_TOKENS_PER_CALL, OUTPUT_TOKENS_PER_CALL)
+    return calls * estimate_cost(model, tokens_in, tokens_out)
 
 
-def card_lines(calls: int, model: str, *, claim_checks: int = 0, label: str = "AI extraction") -> list[str]:
-    lines = [f"  {label}: {calls} calls · {model} · ~${estimated_cost(calls, model):.3f}"]
+def card_lines(calls: int, model: str, *, claim_checks: int = 0, label: str = "AI extraction",
+               tokens: tuple[int, int] | None = None) -> list[str]:
+    lines = [f"  {label}: {calls} calls · {model} · ~${estimated_cost(calls, model, tokens):.3f}"]
     if claim_checks:
         lines.append(f"  Plus up to {claim_checks} claim checks (this business has confirmed facts) "
                      f"· {model} · ~${estimated_cost(claim_checks, model):.3f}")
@@ -41,7 +44,8 @@ def card_lines(calls: int, model: str, *, claim_checks: int = 0, label: str = "A
 
 
 def confirm_cost(calls: int, *, model: str, claim_checks: int = 0,
-                 ask: Callable[[str], str], say: Callable[[str], None], label: str = "AI extraction") -> None:
+                 ask: Callable[[str], str], say: Callable[[str], None], label: str = "AI extraction",
+                 tokens: tuple[int, int] | None = None) -> None:
     """Prints the cost card, then asks for `yes`. Anything else raises CostGateAborted.
 
     With no terminal on stdin (piped or scheduled) the card is still printed, for the log, then
@@ -50,7 +54,7 @@ def confirm_cost(calls: int, *, model: str, claim_checks: int = 0,
     """
     if calls <= 0:
         return                                   # nothing to read, nothing to pay for
-    for line in card_lines(calls, model, claim_checks=claim_checks, label=label):
+    for line in card_lines(calls, model, claim_checks=claim_checks, label=label, tokens=tokens):
         say(line)
     if not stdin_is_tty():
         say(NO_TERMINAL_MESSAGE)

@@ -603,8 +603,8 @@ Now: Postgres in Docker on Daivik's Mac, files in `clients/` on the Mac. With th
 | | | **Prototype — a working loop for any business, in this order (re-scoped 29 Oct 2026, v4.9)** | |
 | 12 | **`aeo status`** — change status with a required reason (§7). The decline flow already tells people to use it | ✅ Done |
 | 25 | **Diagnose additions, generic parts only:** **sitemap check** (a missing or 404 sitemap is a finding — O'land's new site had none at the apex on 15 Oct, which the diagnosis did not flag); **apex/www consistency** (both must serve the same site, or one must 301 to the other); **CDN/host detection from response headers**; **optional old-site redirect check** (fetch the old site's sitemap, confirm every old URL redirects) | ✅ Done |
-| 13b | **`aeo questions draft`** — AI drafts candidate buyer questions from the truth document + diagnosis (§16); a person picks and freezes. Also suggests an 8-question spot-check subset | ⏭ Next |
-| 17a | **`aeo backup`**, local only — dump the database to the backup folder (§16) | |
+| 13b | **`aeo questions draft`** — AI drafts candidate buyer questions from the truth document + diagnosis (§16); a person picks and freezes. Also suggests an 8-question spot-check subset | ✅ Done |
+| 17a | **`aeo backup`**, local only — dump the database to the backup folder (§16) | ⏭ Next |
 | 18 | **`aeo brief`** — citation aggregation, content brief + outreach list | |
 | 14 | **`aeo guide`** — plain-language runbook of the three prototype phases (A / B / C, §2): every command, when to use it, in what order | |
 | 27 | **Real-data trial** — Phase A on O'land plus 3 unrelated businesses; fix what breaks | |
