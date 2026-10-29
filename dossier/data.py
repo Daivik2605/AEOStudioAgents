@@ -25,6 +25,7 @@ from core.checkpoints import CHECKPOINTS
 from core.evidence import list_evidence
 from core.profiles import CONFIRMED, latest_profile
 from core.timeline import collect_work
+from diagnose.codes import CHECK_FOR_CODE
 from diagnose.crawler import BOTS
 from diagnose.html_utils import parse_page
 from diagnose.structured_data import ORG_TYPES, _types, _walk
@@ -93,9 +94,13 @@ def load(conn, business: dict) -> dict:
         cur.execute("SELECT name, domain, website_url, status FROM businesses WHERE id = %s", (bid,))
         name, domain, url, status = cur.fetchone()
         cur.execute("SELECT id, checkpoint, checked_at, platform, platform_plan, verdict, findings, render, crawler_access, "
-                    "existing_jsonld, url FROM diagnoses WHERE business_id = %s ORDER BY checked_at, created_at, id", (bid,))
+                    "existing_jsonld, url, detected_cdn, detected_host, detected_framework, site_checks "
+                    "FROM diagnoses WHERE business_id = %s ORDER BY checked_at, created_at, id", (bid,))
         diagnoses = [{"id": str(r[0]), "checkpoint": r[1], "checked_at": r[2], "platform": r[3], "plan": r[4], "verdict": r[5],
-                      "findings": r[6] or [], "render": r[7], "crawler": r[8] or {}, "jsonld": r[9] or [], "url": r[10]}
+                      "findings": r[6] or [], "render": r[7], "crawler": r[8] or {}, "jsonld": r[9] or [], "url": r[10],
+                      "cdn": r[11], "host": r[12], "framework": r[13], "site_checks": r[14],
+                      # Which step 25 checks this diagnosis ran; one made before step 25 ran none of them.
+                      "checks_ran": list((r[14] or {}).get("checks_ran", []))}
                      for r in cur.fetchall()]
         cur.execute("SELECT id, checkpoint, run_type, status, COALESCE(completed_at, created_at) FROM probe_runs "
                     "WHERE business_id = %s ORDER BY COALESCE(completed_at, created_at), id", (bid,))
@@ -247,8 +252,15 @@ def diagnosis_column(d: dict) -> dict:
     rows["Areas served"] = ("given" if j["area_served"] else "not given") if j["blocks"] else "no structured data"
     rows["Opening hours"] = j["opening_hours"] if j["blocks"] else "no structured data"
     rows["llms.txt"] = "missing" if "LLMS_TXT_MISSING" in codes else "present (no finding raised)"
-    rows["Sitemap and host consistency"] = ("see findings" if any(c.startswith(("SITEMAP_", "HOST_CONSISTENCY")) for c in codes)
-                                           else "not checked yet")
+    ran = d.get("checks_ran") or []
+    address_codes = sorted(c for c in codes if c in CHECK_FOR_CODE and CHECK_FOR_CODE[c] in ("sitemap", "hosts"))
+    rows["Sitemap and host consistency"] = (
+        "see findings: " + ", ".join(address_codes) if address_codes
+        else "no problems found" if "sitemap" in ran or "hosts" in ran else "not checked yet")
+    if d.get("site_checks") is None:
+        rows["CDN / host / framework"] = "not recorded yet"      # a diagnosis made before step 25, or the site gave no page
+    else:
+        rows["CDN / host / framework"] = " / ".join(d.get(k) or "unknown" for k in ("cdn", "host", "framework"))
     return rows
 
 

@@ -7,9 +7,11 @@ from dataclasses import dataclass, field
 
 from diagnose.crawler import CrawlerTest
 from diagnose.fetch import FetchResult
+from diagnose.infrastructure import Infrastructure
 from diagnose.platform_detect import Detection
 from diagnose.render import RenderCheck
 from diagnose.robots import RobotsCheck
+from diagnose.site_checks import SiteChecks
 from diagnose.structured_data import SchemaAnalysis
 
 
@@ -26,6 +28,8 @@ class Facts:
     schema: SchemaAnalysis | None = None
     jsonld_raw: list[str] = field(default_factory=list)
     site_reachable: bool = True             # False if the browser control got no usable page at all
+    infrastructure: Infrastructure | None = None   # CDN / host / framework from the response headers (information only)
+    site_checks: SiteChecks | None = None   # sitemap, www / http addresses, and old addresses when asked for (step 25)
 
     @property
     def platform(self) -> str | None:

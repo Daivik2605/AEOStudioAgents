@@ -12,6 +12,7 @@ from diagnose.codes import SEVERITIES, make_finding
 from diagnose.crawler import BOTS, FAILING
 from diagnose.facts import Facts
 from diagnose.rules import NEVER_DELIBERATE, crawl_inconclusive
+from diagnose.site_checks import EXAMPLES_SHOWN, OLD_URL_CODES, example_line
 
 _PD = "research/PLATFORM_DELIVERY.md"
 
@@ -231,6 +232,120 @@ def build_findings(facts: Facts) -> list[dict]:
                 issue.code, what=issue.what, evidence=_short(issue.evidence),
                 fixable_on_platform=fixable, where_to_fix=where, source=src))
 
+    out += site_check_findings(facts)
+
     rank = {s: i for i, s in enumerate(SEVERITIES)}
     out.sort(key=lambda f: (rank[f["severity"]], f["code"]))
     return out
+
+
+# ---- the step 25 checks: sitemap, addresses, old addresses -----------------------------------------------------------------
+
+_SITEMAP_SOURCE = "sitemaps.org protocol; PLAN.md step 25"
+_HOST_SOURCE = "RFC 9110 §15.4 (redirection status codes); PLAN.md step 25"
+_OLD_SOURCE = "RFC 9110 §15.4 (301/308 permanent, 302/307 temporary); PLAN.md step 25"
+_ASK_HOST = "At the domain or hosting settings (or the CDN in front of the site): ask whoever manages them."
+
+
+def site_check_findings(facts: Facts) -> list[dict]:
+    sc = facts.site_checks
+    if sc is None:
+        return []
+    out: list[dict] = []
+
+    # ---- sitemap ----
+    s = sc.sitemap
+    if s is not None:
+        where = ("The site's SEO settings or its sitemap feature (many site builders make /sitemap.xml for you); "
+                 "otherwise ask whoever manages the site.")
+        tried = ", ".join(f"{r['url']} -> " + (f"HTTP {r['status']}" if r["status"] else "no answer") for r in s.fetched[:4])
+        if not s.found:
+            out.append(make_finding(
+                "SITEMAP_MISSING", what="The site has no sitemap: /sitemap.xml and the sitemaps named in robots.txt did not answer",
+                evidence=_short(tried or "nothing to try"), fixable_on_platform=None, where_to_fix=where, source=_SITEMAP_SOURCE))
+        elif not s.valid:
+            bad = next((r for r in s.fetched if r["status"] == 200), s.fetched[0])
+            why = ("is not valid XML" if bad["kind"] in (None, "not_xml", "other_xml") else "lists no pages")
+            out.append(make_finding(
+                "SITEMAP_INVALID", what=f"A sitemap was found but it {why}, so crawlers cannot use it",
+                evidence=_short(f"{bad['url']} -> HTTP {bad['status']}, {bad['content_type'] or 'no content type'}"),
+                fixable_on_platform=None, where_to_fix=where, source=_SITEMAP_SOURCE))
+        else:
+            if s.in_robots is False:
+                out.append(make_finding(
+                    "SITEMAP_NOT_IN_ROBOTS", what="The sitemap works but robots.txt does not list it",
+                    evidence=_short(f"robots.txt has {len(s.robots_listed)} Sitemap line(s)" if s.robots_listed
+                                    else "robots.txt has no Sitemap: line"),
+                    fixable_on_platform=None,
+                    where_to_fix="Add a line to robots.txt: Sitemap: <the sitemap address>. " + pd.delivery_route(facts.platform, "robots")[1],
+                    source=_SITEMAP_SOURCE))
+            if s.mismatched_urls:
+                out.append(make_finding(
+                    "SITEMAP_HOST_MISMATCH",
+                    what=f"The sitemap lists {s.mismatched_urls} page(s) on a different form of the address than the site uses ({s.canonical_host})",
+                    evidence=_short("; ".join(s.mismatch_examples[:3])), fixable_on_platform=None,
+                    where_to_fix="Regenerate the sitemap so every address uses " + s.canonical_host + " (the site's SEO or domain settings).",
+                    source=_SITEMAP_SOURCE))
+
+    # ---- www / non-www and http / https ----
+    h = sc.hosts
+    if h is not None:
+        rows = [h.apex, h.www]
+        if all(r.answered_200 for r in rows):
+            out.append(make_finding(
+                "HOST_DUPLICATE", what=f"Both {h.apex.host} and {h.www.host} answer with the site, and neither sends visitors to the other",
+                evidence=f"{h.apex.host}: HTTP {h.apex.status}; {h.www.host}: HTTP {h.www.status}", fixable_on_platform=None,
+                where_to_fix="Pick one address and add a permanent (301) redirect from the other. " + _ASK_HOST, source=_HOST_SOURCE))
+        for r in rows:
+            other = h.www if r is h.apex else h.apex
+            if r.status in TEMPORARY_STATUSES and r.redirects_to_host == other.host.lower():
+                out.append(make_finding(
+                    "HOST_REDIRECT_NOT_PERMANENT",
+                    what=f"{r.host} sends visitors to {other.host} with a temporary redirect (HTTP {r.status}), not a permanent one",
+                    evidence=f"{r.host} -> {r.location} (HTTP {r.status})", fixable_on_platform=None,
+                    where_to_fix="Change the redirect to a permanent one (301 or 308). " + _ASK_HOST, source=_HOST_SOURCE))
+        for r in rows:
+            other = h.www if r is h.apex else h.apex
+            if r.failed_to_connect and not r.dns_failure and not other.failed_to_connect:
+                out.append(make_finding(
+                    "HOST_WWW_UNREACHABLE", what=f"{r.host} exists but does not answer, while {other.host} does",
+                    evidence=_short(r.error or "no answer"), fixable_on_platform=None,
+                    where_to_fix="Point it at the site, or redirect it permanently to " + other.host + ". " + _ASK_HOST,
+                    source=_HOST_SOURCE))
+        if h.http_ends_at_https is False:
+            out.append(make_finding(
+                "HTTP_NOT_REDIRECTED", what="Opening the site over plain http does not end up on https",
+                evidence=f"http://{h.canonical_host}/ ended at {h.http_final_url} (HTTP {h.http_status})",
+                fixable_on_platform=None,
+                where_to_fix="Turn on 'force HTTPS' or add a permanent redirect from http to https. " + _ASK_HOST, source=_HOST_SOURCE))
+
+    # ---- old addresses (only when asked for) ----
+    o = sc.old_urls
+    if o is not None:
+        total = len(o.results)
+        what = {
+            "OLD_URL_404": "end at a page that is not there (404 or 410)",
+            "OLD_URL_NOT_PERMANENT": "redirect with a temporary redirect (302 or 307)",
+            "OLD_URL_CHAIN": "go through more than one redirect before reaching a page",
+            "OLD_URL_TO_HOME": "are all sent to the homepage instead of a matching page",
+        }
+        fix = {
+            "OLD_URL_404": "Add a permanent (301) redirect from each old address to the matching new page.",
+            "OLD_URL_NOT_PERMANENT": "Change these redirects to permanent ones (301 or 308).",
+            "OLD_URL_CHAIN": "Point each old address straight at its final page with a single permanent redirect.",
+            "OLD_URL_TO_HOME": "Redirect each old address to its matching new page, not to the homepage.",
+        }
+        for code in OLD_URL_CODES:
+            hit = o.with_issue(code)
+            if not hit:
+                continue
+            examples = [example_line(r) for r in hit[:EXAMPLES_SHOWN]]
+            more = f" (and {len(hit) - EXAMPLES_SHOWN} more in the evidence file)" if len(hit) > EXAMPLES_SHOWN else ""
+            out.append(make_finding(
+                code, what=f"{len(hit)} of {total} old address(es) checked {what[code]}",
+                evidence="; ".join(examples) + more, fixable_on_platform=None,
+                where_to_fix=fix[code] + " " + _ASK_HOST, source=_OLD_SOURCE))
+    return out
+
+
+TEMPORARY_STATUSES = (302, 307)

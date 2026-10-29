@@ -8,15 +8,17 @@ Same input, same answer, no sampling, so no range is needed or shown."""
 from __future__ import annotations
 
 from compare.errors import CompareError
-from diagnose.codes import subject_removed_by
+from diagnose.codes import CHECK_FOR_CODE, subject_removed_by
 
 SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
-COLUMNS = "id, checkpoint, checked_at, platform, platform_plan, verdict, findings, url, business_id"
+COLUMNS = "id, checkpoint, checked_at, platform, platform_plan, verdict, findings, url, business_id, site_checks"
 
 
 def _row(r) -> dict:
+    # Which of the step 25 checks this diagnosis ran. A diagnosis made before step 25 ran none of them: [] here, not "unknown".
+    ran = list((r[9] or {}).get("checks_ran", []))
     return {"id": str(r[0]), "checkpoint": r[1], "checked_at": r[2], "platform": r[3], "plan": r[4], "verdict": r[5],
-            "findings": r[6] or [], "url": r[7]}
+            "findings": r[6] or [], "url": r[7], "checks_ran": ran}
 
 
 def pick_diagnosis(conn, business_id: str, label: str, given: str | None) -> dict | None:
@@ -62,10 +64,19 @@ def compare_diagnoses(a: dict, b: dict, work: list[dict], until: str) -> dict:
         return [{"date": w["date"], "operator": w["operator"], "text": w["text"]}
                 for w in work if w["finding"] == code and w["date"] <= until]
 
+    # A finding that is missing from B is only "fixed" if the check that could have raised it ran in B; one that is in B
+    # is only "new" if that check ran in A. Otherwise it is listed as not compared, never as fixed or new.
+    # (`checks_ran` is absent on a diagnosis passed in as plain data: then everything is compared, as before.)
+    def not_run(code: str, side: dict) -> bool:
+        check, ran = CHECK_FOR_CODE.get(code), side.get("checks_ran")
+        return check is not None and ran is not None and check not in ran
+    not_rechecked = sorted(c for c in fa if c not in fb and not_run(c, b))
+    not_compared = sorted(c for c in fb if c not in fa and not_run(c, a))
+
     later_codes = set(fb)
     fixed, gone = [], []
     for c in fa:
-        if c in fb:
+        if c in fb or c in not_rechecked:
             continue
         item = {"code": c, "severity": fa[c]["severity"], "what": fa[c]["what"], "work": work_for(c)}
         removed_by = subject_removed_by(c, later_codes)
@@ -77,7 +88,8 @@ def compare_diagnoses(a: dict, b: dict, work: list[dict], until: str) -> dict:
     fixed, gone = _sorted(fixed), _sorted(gone)
     still = _sorted([{"code": c, "severity": fb[c]["severity"], "severity_in_a": fa[c]["severity"],
                       "what": fb[c]["what"], "work": work_for(c)} for c in fa if c in fb])
-    new = _sorted([{"code": c, "severity": fb[c]["severity"], "what": fb[c]["what"]} for c in fb if c not in fa])
+    new = _sorted([{"code": c, "severity": fb[c]["severity"], "what": fb[c]["what"]}
+                   for c in fb if c not in fa and c not in not_compared])
 
     def change(field: str) -> dict:
         return {"a": a[field], "b": b[field], "changed": a[field] != b[field]}
@@ -87,6 +99,12 @@ def compare_diagnoses(a: dict, b: dict, work: list[dict], until: str) -> dict:
         if code in fb and code not in fa:
             caveats.append(f"B has {code}: its crawler and robots.txt checks did not complete, "
                            "so findings from those checks that are missing from B cannot be called fixed.")
+    if not_rechecked:
+        caveats.append(f"B did not run the check behind {', '.join(not_rechecked)}, so {'this finding' if len(not_rechecked) == 1 else 'these findings'} "
+                       "from A cannot be called fixed. Run that check again (for the old addresses: `aeo diagnose … --old-urls <file>`).")
+    if not_compared:
+        caveats.append(f"A did not run the check behind {', '.join(not_compared)} (it was made before that check existed, or without it), "
+                       f"so {'this finding' if len(not_compared) == 1 else 'these findings'} in B cannot be called new: it may have been there all along.")
     total = len(fa)
     return {
         "headline": headline_text(len(fixed), len(gone), len(still), len(new), total),
@@ -96,5 +114,5 @@ def compare_diagnoses(a: dict, b: dict, work: list[dict], until: str) -> dict:
         # contains findings whose subject was removed.
         "fixed": fixed, "closed": fixed, "no_longer_applies": gone, "still_open": still, "new": new,
         "platform": change("platform"), "plan": change("plan"), "verdict": change("verdict"),
-        "caveats": caveats,
+        "caveats": caveats, "not_rechecked": not_rechecked, "not_compared": not_compared,
     }

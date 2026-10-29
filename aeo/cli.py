@@ -72,12 +72,14 @@ def diagnose(
     url: str = typer.Argument(..., help="The site to check, e.g. https://example.com"),
     business: Optional[str] = typer.Option(None, "--business", help="Business id, domain or name. Links the result to it and adds a model-written summary."),
     checkpoint: Optional[str] = typer.Option(None, "--checkpoint", help=CHECKPOINT_HELP),
+    old_urls: Optional[Path] = typer.Option(None, "--old-urls", help="A file of old addresses, one per line (blank lines and # comments ignored; at most 200). Checks where each one goes now. Without this option that check does not run."),
 ) -> None:
     """Free, code-only check of whether a site can be helped: serve, conditional or decline."""
     business_id = _find_business(business)["id"] if business else None
-    typer.echo(f"Checking {url} (about 8 requests, one per second)...")
+    typer.echo(f"Checking {url} (about 20 requests, at most two per second"
+               + (", plus the old addresses" if old_urls else "") + ")...")
     try:
-        out = run_diagnosis(url, business_id=business_id, checkpoint=checkpoint)
+        out = run_diagnosis(url, business_id=business_id, checkpoint=checkpoint, old_urls=old_urls)
     except DiagnoseError as exc:
         typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
@@ -92,6 +94,14 @@ def diagnose(
         typer.echo(f"Platform: {pd.PLATFORM_LABELS[det.platform]}" + (f" {det.version}" if det.version else ""))
     else:
         typer.echo("Platform: not recognised")
+    if out.facts.infrastructure:
+        typer.echo("Setup: " + out.facts.infrastructure.summary() + "  (from the response headers; information, not a finding)")
+    sc = out.facts.site_checks
+    if sc and sc.old_urls:
+        o = sc.old_urls.to_json()
+        typer.echo(f"Old addresses: {o['checked']} checked; " + ", ".join(
+            f"{n} {c.lower().replace('_', ' ')}" for c, n in o["counts"].items() if n) + ("" if any(o["counts"].values()) else "no problems found")
+                   + ". Every address is in the evidence file.")
     if out.ai_explanation:
         typer.echo("")
         typer.echo(out.ai_explanation)

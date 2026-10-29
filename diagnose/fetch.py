@@ -15,6 +15,7 @@ touches the network.
 from __future__ import annotations
 
 import hashlib
+import socket
 import time
 from dataclasses import dataclass, field
 from typing import Callable
@@ -42,6 +43,7 @@ class FetchResult:
     size: int = 0                  # body bytes actually read
     body_hash: str = ""            # sha256 of the body with whitespace collapsed
     error: str | None = None
+    dns_failure: bool = False      # the host name does not exist (as opposed to a refused or timed-out connection)
     truncated: bool = False
 
     @property
@@ -49,8 +51,13 @@ class FetchResult:
         return urlsplit(self.final_url or self.url).hostname or ""
 
 
+REQUEST_TIMEOUT_SECONDS = 10
+MAX_REDIRECT_HOPS = 5
+
+
 def make_client() -> httpx.Client:
-    return httpx.Client(follow_redirects=True, max_redirects=5, timeout=httpx.Timeout(15.0))
+    return httpx.Client(follow_redirects=True, max_redirects=MAX_REDIRECT_HOPS,
+                        timeout=httpx.Timeout(REQUEST_TIMEOUT_SECONDS))
 
 
 class Fetcher:
@@ -71,16 +78,26 @@ class Fetcher:
         self._last_request_at: float | None = None
         self.requests_made = 0
 
-    def get(self, url: str, user_agent: str) -> FetchResult:
-        result = self._once(url, user_agent)
+    def sibling(self, *, max_requests: int, min_interval: float | None = None) -> "Fetcher":
+        """A second Fetcher with its own request count and cap that uses the SAME HTTP client, so anything wired to a
+        fake transport (every test) stays on it. The site checks of step 25 use one, so they do not eat into the budget
+        of the main diagnosis."""
+        return Fetcher(self.client, max_requests=max_requests,
+                       min_interval=self.min_interval if min_interval is None else min_interval,
+                       sleep=self._sleep, clock=self._clock)
+
+    def get(self, url: str, user_agent: str, *, follow_redirects: bool | None = None) -> FetchResult:
+        """follow_redirects=None uses the client's setting (follow, at most MAX_REDIRECT_HOPS). False returns the
+        first response as it is, so a 301 or 302 can be seen."""
+        result = self._once(url, user_agent, follow_redirects)
         if result.status == 429:
             wait = _retry_after_seconds(result.headers.get("retry-after"))
             if wait is not None and wait <= MAX_RETRY_AFTER_SECONDS:
                 self._sleep(wait)
-                result = self._once(url, user_agent)
+                result = self._once(url, user_agent, follow_redirects)
         return result
 
-    def _once(self, url: str, user_agent: str) -> FetchResult:
+    def _once(self, url: str, user_agent: str, follow_redirects: bool | None = None) -> FetchResult:
         if self.requests_made >= self.max_requests:
             raise RequestBudgetExceeded(f"request cap of {self.max_requests} reached")
 
@@ -99,7 +116,8 @@ class Fetcher:
             "Accept-Language": "en",
         }
         try:
-            with self.client.stream("GET", url, headers=headers) as response:
+            extra = {} if follow_redirects is None else {"follow_redirects": follow_redirects}
+            with self.client.stream("GET", url, headers=headers, **extra) as response:
                 chunks: list[bytes] = []
                 total = 0
                 for chunk in response.iter_bytes():
@@ -118,7 +136,22 @@ class Fetcher:
                 result.body_hash = hashlib.sha256(" ".join(result.text.split()).encode()).hexdigest()
         except httpx.HTTPError as exc:
             result.error = f"{type(exc).__name__}: {exc}"
+            result.dns_failure = _is_dns_failure(exc)
         return result
+
+
+_DNS_MESSAGES = ("name or service not known", "nodename nor servname", "no address associated", "name resolution",
+                 "getaddrinfo failed", "errno -2]", "errno -5]", "errno 8]", "nxdomain")
+
+
+def _is_dns_failure(exc: BaseException) -> bool:
+    """True when the failure is 'this host name does not exist', not 'the server did not answer'."""
+    seen = exc
+    while seen is not None:
+        if isinstance(seen, socket.gaierror):
+            return True
+        seen = seen.__cause__ or seen.__context__
+    return any(m in str(exc).lower() for m in _DNS_MESSAGES)
 
 
 def _headers_to_dict(headers: httpx.Headers) -> dict[str, str]:

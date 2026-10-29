@@ -1,0 +1,53 @@
+# What sits in front of, or underneath, a website, read from the response headers of the main page.
+# Information only: nothing here is a finding. To add a rule, add a block; no code change is needed.
+#
+#   header   the response header to look at (any case)
+#   pattern  a regular expression the header value must match (case-insensitive).
+#            Leave it out, or write "", to fire whenever the header is present.
+#   label    the name shown in reports and stored on the diagnosis
+#   kind     cdn        a network in front of the site (it caches or protects it)
+#            host       where the site runs
+#            framework  what the site's code is built with
+#
+# Order matters only within one kind: the first rule that fires gives the answer for that kind.
+# Rules are ours, written from each vendor's own documented headers (PLAN.md section 4 explains why we do not use
+# a public fingerprint database). Cloudflare, Vercel and WP Engine are also recognised by diagnose/platform_detect.py
+# for the decline/conditional rules; the two lists are not merged yet.
+
+rules:
+  # ---- CDN -------------------------------------------------------------------------------------------------------
+  - {header: cf-ray, label: Cloudflare, kind: cdn}
+  - {header: server, pattern: '^cloudflare', label: Cloudflare, kind: cdn}
+  - {header: x-amz-cf-id, label: Amazon CloudFront, kind: cdn}
+  - {header: via, pattern: 'cloudfront', label: Amazon CloudFront, kind: cdn}
+  - {header: x-azure-ref, label: Azure Front Door, kind: cdn}
+  - {header: x-fastly-request-id, label: Fastly, kind: cdn}
+  - {header: x-served-by, pattern: '^cache-', label: Fastly, kind: cdn}
+  - {header: server, pattern: '^akamai', label: Akamai, kind: cdn}
+  - {header: x-akamai-transformed, label: Akamai, kind: cdn}
+  - {header: x-sucuri-id, label: Sucuri, kind: cdn}
+  - {header: x-cdn, pattern: 'imperva|incapsula', label: Imperva, kind: cdn}
+  - {header: server, pattern: '^bunnycdn', label: Bunny CDN, kind: cdn}
+  # ---- host ------------------------------------------------------------------------------------------------------
+  - {header: x-vercel-id, label: Vercel, kind: host}
+  - {header: server, pattern: '^vercel', label: Vercel, kind: host}
+  - {header: x-nf-request-id, label: Netlify, kind: host}
+  - {header: server, pattern: '^netlify', label: Netlify, kind: host}
+  - {header: fly-request-id, label: Fly.io, kind: host}
+  - {header: x-github-request-id, label: GitHub Pages, kind: host}
+  - {header: x-wpe-loopback-upstream-addr, label: WP Engine, kind: host}
+  - {header: x-powered-by, pattern: 'wp engine', label: WP Engine, kind: host}
+  - {header: x-render-origin-server, label: Render, kind: host}
+  - {header: via, pattern: 'vegur', label: Heroku, kind: host}
+  - {header: server, pattern: '^amazons3', label: Amazon S3, kind: host}
+  - {header: x-kinsta-cache, label: Kinsta, kind: host}
+  - {header: x-pantheon-styx-hostname, label: Pantheon, kind: host}
+  # ---- framework -------------------------------------------------------------------------------------------------
+  - {header: x-nextjs-cache, label: Next.js, kind: framework}
+  - {header: x-powered-by, pattern: '^next\.js', label: Next.js, kind: framework}
+  - {header: x-powered-by, pattern: '^express', label: Express, kind: framework}
+  - {header: x-powered-by, pattern: '^asp\.net', label: ASP.NET, kind: framework}
+  - {header: x-aspnet-version, label: ASP.NET, kind: framework}
+  - {header: x-powered-by, pattern: '^php', label: PHP, kind: framework}
+  - {header: x-powered-by, pattern: '^phusion passenger', label: Ruby (Passenger), kind: framework}
+  - {header: x-runtime, label: Ruby on Rails, kind: framework}

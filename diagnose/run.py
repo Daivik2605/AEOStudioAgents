@@ -8,6 +8,10 @@
   9. write the report: files always (clients/<domain>/), database rows when the database is reachable
  10. on a decline, record it and stop
 
+and, between 3 and 4 (PLAN.md step 25): the CDN / host / framework seen in the headers, the sitemap check, the
+www / http address check, and the old-address check when `old_urls` is given. These use their own request count
+(see Fetcher.sibling), so the budget of the main diagnosis is unchanged.
+
 Nothing here sends, publishes or deploys anything.
 """
 
@@ -27,10 +31,13 @@ from diagnose.facts import Facts
 from diagnose.fetch import Fetcher, RequestBudgetExceeded
 from diagnose.findings import build_findings
 from diagnose.html_utils import parse_page
+from diagnose.infrastructure import detect_infrastructure
 from diagnose.platform_detect import detect
 from diagnose.render import check_render
 from diagnose.robots import check_robots
 from diagnose.rules import Verdict, decide
+from diagnose.site_checks import (MAX_OLD_URL_REQUESTS, SITE_CHECK_INTERVAL, SITE_CHECK_REQUESTS, SiteCheckError,
+                                  SiteChecks, check_hosts, check_old_urls, check_sitemap, load_old_urls)
 from diagnose.structured_data import analyse
 
 
@@ -74,12 +81,15 @@ def run_diagnosis(
     explain_client=None,
     use_ai: bool = True,
     now: datetime | None = None,
+    old_urls: str | Path | None = None,    # a file of old addresses, one per line; without it that check does not run
 ) -> DiagnosisOutcome:
     url = normalise_url(url)
     try:
         check_checkpoint(checkpoint)          # before any request is made
     except CheckpointError as exc:
         raise DiagnoseError(str(exc)) from exc
+    if old_urls is not None and not Path(old_urls).is_file():       # before any request is made
+        raise DiagnoseError(f"the old-address file {old_urls} does not exist")
     warnings: list[str] = []
 
     # A business needs the database (to check it exists and to log the work).
@@ -97,13 +107,13 @@ def run_diagnosis(
 
     try:
         return _run(url, business, conn, checkpoint, fetcher or Fetcher(), clients_root,
-                    explain_client, use_ai, now or datetime.now(timezone.utc), warnings)
+                    explain_client, use_ai, now or datetime.now(timezone.utc), warnings, old_urls)
     finally:
         if conn is not None:
             conn.close()
 
 
-def _run(url, business, conn, checkpoint, fetcher, clients_root, explain_client, use_ai, now, warnings):
+def _run(url, business, conn, checkpoint, fetcher, clients_root, explain_client, use_ai, now, warnings, old_urls=None):
     # 1-2. Crawler test (its browser fetch doubles as the page we analyse).
     crawler = run_crawler_test(fetcher, url)
     page = crawler.control
@@ -131,6 +141,11 @@ def _run(url, business, conn, checkpoint, fetcher, clients_root, explain_client,
         except RequestBudgetExceeded as exc:
             warnings.append(f"Stopped early: {exc}.")
 
+    # 3b. Step 25. What is in front of the site (information only), then the checks that apply to any website.
+    facts.infrastructure = detect_infrastructure(page.headers) if reachable else None
+    if reachable:
+        facts.site_checks = run_site_checks(fetcher, facts, final_url, old_urls, warnings)
+
     # 4-5. Render check and structured data.
     if usable:
         b = business or {}
@@ -156,7 +171,8 @@ def _run(url, business, conn, checkpoint, fetcher, clients_root, explain_client,
     # 9. Save. The database is the record, the files are for people; both get written.
     data = report.build_json(
         facts=facts, verdict=verdict, findings=findings, readiness=readiness, checkpoint=checkpoint,
-        checked_at=now, ai_explanation=ai_text, requests_made=fetcher.requests_made)
+        checked_at=now, ai_explanation=ai_text,
+        requests_made=fetcher.requests_made + (facts.site_checks.requests_made if facts.site_checks else 0))
     slug = report.slugify_domain(business["domain"] if business else final_url)
 
     diagnosis_id = decline_result = None
@@ -171,7 +187,11 @@ def _run(url, business, conn, checkpoint, fetcher, clients_root, explain_client,
                 platform_plan=detection.plan, robots_txt=facts.robots.raw if facts.robots else None,
                 existing_jsonld=parsed.jsonld_raw, crawler_access=crawler.to_json(),
                 render=facts.render.to_json() if facts.render else None, findings=findings,
-                verdict=verdict.verdict, verdict_reason=verdict.reason, readiness_score=readiness))
+                verdict=verdict.verdict, verdict_reason=verdict.reason, readiness_score=readiness,
+                detected_cdn=facts.infrastructure.cdn if facts.infrastructure else None,
+                detected_host=facts.infrastructure.host if facts.infrastructure else None,
+                detected_framework=facts.infrastructure.framework if facts.infrastructure else None,
+                site_checks=facts.site_checks.to_json() if facts.site_checks else None))
             if business:
                 store.journal_diagnosed(db, business_id=business["id"], diagnosis_id=diagnosis_id, url=url,
                                         verdict=verdict.verdict, platform=detection.platform,
@@ -191,8 +211,11 @@ def _run(url, business, conn, checkpoint, fetcher, clients_root, explain_client,
     data["diagnosis_id"] = diagnosis_id
     # The exact bytes of the no-JavaScript control fetch: the same page the render check and
     # structured-data extraction just read. It goes to evidence/ (it came in); the report to generated/.
+    old_urls_evidence = (facts.site_checks.old_urls.to_json(full=True)
+                         if facts.site_checks and facts.site_checks.old_urls else None)
     folder, run_number, report_path = report.write_report(data=data, slug=slug, day=now.date(),
-                                                          raw_page=page.body or None, root=clients_root)
+                                                          raw_page=page.body or None, root=clients_root,
+                                                          old_urls=old_urls_evidence)
 
     if db_error is not None:
         if business:
@@ -204,6 +227,35 @@ def _run(url, business, conn, checkpoint, fetcher, clients_root, explain_client,
                             diagnosis_id=diagnosis_id,
                             ai_explanation=ai_text, decline_result=decline_result, warnings=warnings,
                             run_number=run_number)
+
+
+def run_site_checks(fetcher: Fetcher, facts: Facts, final_url: str, old_urls, warnings: list[str]) -> SiteChecks:
+    """The step 25 checks, on the address the diagnosis ended at. A failure to connect is a result, not an error."""
+    parts = urlsplit(final_url)
+    origin = f"{parts.scheme}://{parts.netloc}"
+    interval = min(fetcher.min_interval, SITE_CHECK_INTERVAL)
+    checks = SiteChecks()
+    robots = facts.robots
+    robots_ok = robots is not None and robots.outcome in ("ok", "missing")
+    quick = fetcher.sibling(max_requests=SITE_CHECK_REQUESTS, min_interval=interval)
+    checks.sitemap = check_sitemap(quick, origin, robots.raw if robots_ok else None, robots_ok)
+    checks.hosts = check_hosts(quick, parts.hostname or "")
+    checks.requests_made = quick.requests_made
+    if old_urls is not None:
+        try:
+            urls, info = load_old_urls(old_urls, origin)
+        except SiteCheckError as exc:
+            raise DiagnoseError(str(exc)) from exc
+        if info["over_cap"]:
+            warnings.append(f"The old-address file has {info['total_in_file']} addresses; only the first "
+                            f"{len(urls)} were checked (the limit).")
+        if info["ignored_lines"]:
+            warnings.append(f"{len(info['ignored_lines'])} line(s) of the old-address file were skipped because they are "
+                            "neither a full address nor a path starting with /.")
+        slow = fetcher.sibling(max_requests=MAX_OLD_URL_REQUESTS, min_interval=interval)
+        checks.old_urls = check_old_urls(slow, urls, info)
+        checks.requests_made += slow.requests_made
+    return checks
 
 
 def facts_names(business: dict | None) -> list[str] | None:

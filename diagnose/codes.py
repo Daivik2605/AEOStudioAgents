@@ -65,6 +65,21 @@ REGISTRY: dict[str, str] = {
     "SCHEMA_OPENING_HOURS_EMPTY": "low",
     "SCHEMA_SAMEAS_HAS_TRACKING_PARAMS": "low",
     "SCHEMA_ENTITIES_UNLINKED": "low",
+    # ---- sitemap (PLAN.md step 25) ------------------------------------------
+    "SITEMAP_MISSING": "medium",              # no sitemap at /sitemap.xml or in robots.txt
+    "SITEMAP_INVALID": "medium",              # found, but not valid XML or it lists no pages
+    "SITEMAP_NOT_IN_ROBOTS": "low",           # a working sitemap that robots.txt does not mention
+    "SITEMAP_HOST_MISMATCH": "medium",        # the sitemap lists pages on the other of www / non-www
+    # ---- which address the site lives at (www or not, http or https) ---------------
+    "HOST_DUPLICATE": "medium",               # www and non-www both answer with the site and neither points to the other
+    "HOST_REDIRECT_NOT_PERMANENT": "low",     # the www / non-www redirect is a 302 or 307, not a 301 or 308
+    "HOST_WWW_UNREACHABLE": "low",            # the other host exists but does not answer
+    "HTTP_NOT_REDIRECTED": "medium",          # plain http does not end up at https
+    # ---- old addresses (only when `aeo diagnose --old-urls` is used) -----------------
+    "OLD_URL_404": "high",                    # an old address ends at a page that is not there
+    "OLD_URL_NOT_PERMANENT": "medium",        # an old address redirects with a 302 or 307
+    "OLD_URL_CHAIN": "low",                   # an old address goes through more than one redirect
+    "OLD_URL_TO_HOME": "medium",              # an old address sends everything to the homepage
     # ---- audit-based fixes (written by `aeo recommend`, not by the diagnosis) -----------
     "AUDIT_WRONG_FACT": "high",               # AI states something that contradicts a confirmed fact
     "AUDIT_TARGET_QUESTION_GAP": "medium",    # a target question where competitors are named and the client is not
@@ -89,6 +104,59 @@ DEPENDS_ON: dict[str, dict[str, Any]] = {
     # "empty" and "more than one" main heading are about headings that exist; "no main heading at all" removes them
     "RENDER_H1_EMPTY": {"subject": "main_heading", "gone_when": ("RENDER_H1_MISSING",)},
     "RENDER_H1_MULTIPLE": {"subject": "main_heading", "gone_when": ("RENDER_H1_MISSING",)},
+    # step 25: a sitemap that is not there can no longer be "invalid", unlisted, or on the wrong host
+    "SITEMAP_INVALID": {"subject": "sitemap", "gone_when": ("SITEMAP_MISSING",)},
+    "SITEMAP_NOT_IN_ROBOTS": {"subject": "sitemap", "gone_when": ("SITEMAP_MISSING", "SITEMAP_INVALID")},
+    "SITEMAP_HOST_MISMATCH": {"subject": "sitemap", "gone_when": ("SITEMAP_MISSING", "SITEMAP_INVALID")},
+    # step 25: the second address stopped answering altogether, so its duplicate or its redirect is no longer there to fix
+    "HOST_DUPLICATE": {"subject": "second_host", "gone_when": ("HOST_WWW_UNREACHABLE",)},
+    "HOST_REDIRECT_NOT_PERMANENT": {"subject": "second_host", "gone_when": ("HOST_WWW_UNREACHABLE",)},
+}
+
+# ---- the step 25 checks ---------------------------------------------------------------------------------------
+# A finding that is absent only means "fixed" if the check that could have raised it actually ran. `--old-urls` is
+# optional, and diagnoses made before step 25 did not have the sitemap or host checks at all. diagnoses.site_checks
+# records which checks ran; compare uses this table to tell "fixed" from "not checked this time".
+CHECK_FOR_CODE: dict[str, str] = {
+    "SITEMAP_MISSING": "sitemap", "SITEMAP_INVALID": "sitemap", "SITEMAP_NOT_IN_ROBOTS": "sitemap",
+    "SITEMAP_HOST_MISMATCH": "sitemap",
+    "HOST_DUPLICATE": "hosts", "HOST_REDIRECT_NOT_PERMANENT": "hosts", "HOST_WWW_UNREACHABLE": "hosts",
+    "HTTP_NOT_REDIRECTED": "hosts",
+    "OLD_URL_404": "old_urls", "OLD_URL_NOT_PERMANENT": "old_urls", "OLD_URL_CHAIN": "old_urls", "OLD_URL_TO_HOME": "old_urls",
+}
+
+# Plain-language explanation of each step 25 code: what it is, and why it matters for AI visibility. The finding's own
+# `what` states the facts of one site; this says what the code means. Shown in the diagnosis report.
+EXPLANATIONS: dict[str, str] = {
+    "SITEMAP_MISSING": "A sitemap is a list of a site's pages that crawlers can read in one go. Without one, an AI search "
+                       "crawler has to find pages by following links, so new or deep pages can be missed or found late. "
+                       "A page the crawler never finds cannot be used in an answer.",
+    "SITEMAP_INVALID": "The site has a sitemap address, but what it serves is not a usable list: it is not valid XML, or it "
+                       "lists no pages. A crawler will skip it, so it does the same job as having no sitemap.",
+    "SITEMAP_NOT_IN_ROBOTS": "The sitemap works, but the site's robots.txt does not say where it is. Crawlers look there "
+                             "first, and many only find a sitemap that is listed. Low risk, one line to add.",
+    "SITEMAP_HOST_MISMATCH": "The sitemap lists pages under one form of the address (with www or without) while the site is "
+                             "served under the other. Crawlers may treat the listed pages as a different site, or skip them.",
+    "HOST_DUPLICATE": "The site answers on both the www and the non-www address, and neither sends visitors to the other. "
+                      "Search and AI systems then see two copies of every page and have to guess which one counts, which "
+                      "splits the signals that would otherwise add up to one site.",
+    "HOST_REDIRECT_NOT_PERMANENT": "One address sends visitors to the other, but with a temporary redirect (302 or 307) "
+                                   "instead of a permanent one (301 or 308). A temporary redirect tells crawlers to keep "
+                                   "the old address, so the move is never fully recognised.",
+    "HOST_WWW_UNREACHABLE": "The other form of the address (with or without www) exists, but does not answer. People or "
+                            "crawlers using it get an error instead of the site. Low risk, but it is a dead end for "
+                            "anyone who links to that form.",
+    "HTTP_NOT_REDIRECTED": "Opening the site over plain http does not end up on https. Crawlers and links that use the old "
+                           "http address get an insecure or duplicate copy, and some systems will not trust it.",
+    "OLD_URL_404": "Addresses from the old site end at a page that is not there. AI crawlers still ask for these addresses "
+                   "(they remember them), get an error, and drop whatever the old page was known for. A redirect to the "
+                   "matching new page keeps that standing.",
+    "OLD_URL_NOT_PERMANENT": "Old addresses are redirected with a temporary redirect (302 or 307). Crawlers read that as "
+                             "'this may come back', so they keep the old address and the new page does not inherit its standing.",
+    "OLD_URL_CHAIN": "Old addresses reach the new page only after more than one redirect in a row. Each extra step slows a "
+                     "crawler down, and some stop following after a few steps.",
+    "OLD_URL_TO_HOME": "Old addresses are all sent to the homepage instead of to their matching new page. To a crawler that "
+                       "looks like the old page was removed, so what it was known for is lost.",
 }
 
 # Codes that inspect the content of JSON-LD (every SCHEMA_ code except the one that says there is none).

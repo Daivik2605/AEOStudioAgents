@@ -43,21 +43,24 @@ def insert_diagnosis(conn: psycopg.Connection, *, business_id: str | None, check
                      checked_at: Any, platform: str | None, platform_version: str | None,
                      platform_plan: str | None, robots_txt: str | None, existing_jsonld: list[str],
                      crawler_access: dict, render: dict | None, findings: list[dict], verdict: str,
-                     verdict_reason: str, readiness_score: float | None) -> UUID:
+                     verdict_reason: str, readiness_score: float | None, detected_cdn: str | None = None,
+                     detected_host: str | None = None, detected_framework: str | None = None,
+                     site_checks: dict | None = None) -> UUID:
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO diagnoses
                 (business_id, checkpoint, url, checked_at, platform, platform_version, platform_plan,
                  robots_txt, existing_jsonld, crawler_access, render, findings, verdict,
-                 verdict_reason, readiness_score)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 verdict_reason, readiness_score, detected_cdn, detected_host, detected_framework, site_checks)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (business_id, checkpoint, url, checked_at, platform, platform_version, platform_plan,
              robots_txt, Jsonb(existing_jsonld), Jsonb(crawler_access),
              Jsonb(render) if render is not None else None, Jsonb(findings), verdict,
-             verdict_reason, readiness_score),
+             verdict_reason, readiness_score, detected_cdn, detected_host, detected_framework,
+             Jsonb(site_checks) if site_checks is not None else None),
         )
         return cur.fetchone()[0]
 

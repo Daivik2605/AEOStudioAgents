@@ -2,6 +2,7 @@
 
     clients/<domain>/generated/<date>_diagnosis_run<N>.md and .json     the report (tool output)
     clients/<domain>/evidence/<date>_raw_page_run<N>.html               the page as fetched (came in, kept forever)
+    clients/<domain>/evidence/<date>_old_urls_run<N>.json               every old address checked, only when --old-urls was used
 
 Every run gets its own numbered, dated files. There is no "latest" copy. See core/client_files.py.
 """
@@ -16,7 +17,7 @@ from core import client_files
 from core.client_files import slugify_domain  # noqa: F401 - re-exported: callers import it from here
 from diagnose import RULES_VERSION
 from diagnose import platform_data as pd
-from diagnose.codes import SEVERITIES
+from diagnose.codes import EXPLANATIONS, SEVERITIES
 from diagnose.crawler import BOTS
 from diagnose.facts import Facts
 from diagnose.rules import Verdict
@@ -69,6 +70,9 @@ def build_json(*, facts: Facts, verdict: Verdict, findings: list[dict], readines
             "version": det.version, "plan": det.plan, "plan_basis": det.plan_basis,
             "signals": det.hits, "candidates": det.candidates, "hosting": det.hosting, "notes": det.notes,
         },
+        # Information, not findings: what is in front of and under the site, from the response headers (step 25).
+        "infrastructure": facts.infrastructure.to_json() if facts.infrastructure else None,
+        "site_checks": facts.site_checks.to_json() if facts.site_checks else None,
         "crawler_access": facts.crawler.to_json() if facts.crawler else None,
         "robots": facts.robots.to_json() if facts.robots else None,
         "robots_txt_raw": facts.robots.raw if facts.robots else None,
@@ -118,6 +122,18 @@ def build_markdown(data: dict) -> str:
         lines.append(f"- Hosting / edge layers seen: {', '.join(p['hosting'])}")
     lines += [f"- Note: {n}" for n in p["notes"]]
     lines.append("")
+
+    infra = data.get("infrastructure")
+    lines += ["## Site setup (from the response headers)", ""]
+    if infra:
+        for kind, label in (("cdn", "CDN"), ("host", "Host"), ("framework", "Framework")):
+            lines.append(f"- {label}: {infra[kind] or 'unknown'}" + (f" ({infra['evidence'][kind]})" if infra[kind] else ""))
+        lines.append("- This is information, not a finding. It says where a fix would be made.")
+    else:
+        lines.append("Not run: the site did not return a page.")
+    lines.append("")
+
+    lines += site_checks_markdown(data.get("site_checks"))
 
     c = data["crawler_access"]
     lines += ["## Can AI crawlers reach the page?", ""]
@@ -170,8 +186,10 @@ def build_markdown(data: dict) -> str:
         lines += [", ".join(f"{n} {s}" for s, n in counts.items() if n), ""]
         for f in data["findings"]:
             fix = {True: "yes", False: "no", None: "unknown"}[f["fixable_on_platform"]]
-            lines += [f"### `{f['code']}` — {f['severity']}", "", f["what"], "",
-                      f"- Evidence: {f['evidence']}", f"- Fixable on this platform: {fix}",
+            lines += [f"### `{f['code']}` — {f['severity']}", "", f["what"], ""]
+            if f["code"] in EXPLANATIONS:
+                lines += [f"Why it matters: {EXPLANATIONS[f['code']]}", ""]
+            lines += [f"- Evidence: {f['evidence']}", f"- Fixable on this platform: {fix}",
                       f"- Where to fix: {f['where_to_fix']}", f"- Source: {f['source']}", ""]
     else:
         lines += ["No findings.", ""]
@@ -187,8 +205,42 @@ def build_markdown(data: dict) -> str:
     return "\n".join(lines)
 
 
+def site_checks_markdown(sc: dict | None) -> list[str]:
+    """The sitemap, www / http and old-address results, as the plain facts that were recorded."""
+    lines = ["## Sitemap and addresses", ""]
+    if not sc:
+        return lines + ["Not run: the site did not return a page.", ""]
+    s, h, o = sc.get("sitemap"), sc.get("hosts"), sc.get("old_urls")
+    if s:
+        state = ("valid, " + f"{s['urls']} address(es)") if s["valid"] else ("found but not usable" if s["found"] else "not found")
+        listed = {True: "listed in robots.txt", False: "NOT listed in robots.txt", None: "robots.txt not checked"}[s["in_robots"]] \
+            if s["valid"] else None
+        lines.append(f"- Sitemap: {state}" + (f"; {listed}" if listed else ""))
+        for r in s["fetched"]:
+            lines.append(f"  - {'child: ' if r['child'] else ''}{r['url']} → " + (f"HTTP {r['status']}" if r["status"] else f"no answer ({r['error']})")
+                         + (f", {r['kind'].replace('_', ' ')}" if r["kind"] else ""))
+        if s["valid"]:
+            lines.append(f"- Addresses in the sitemap use: {', '.join(f'{h_} ({n})' for h_, n in s['hosts_in_sitemap'].items())}"
+                         + ("" if not s["mismatched_urls"] else f" — {s['mismatched_urls']} on a different form than {s['canonical_host']}"))
+        if s["children_not_followed"]:
+            lines.append(f"- {s['children_not_followed']} child sitemap(s) were not followed (limit of 10).")
+    if h:
+        for key in ("apex", "www"):
+            r = h[key]
+            what = (f"HTTP {r['status']}" + (f" → {r['location']}" if r["location"] else "")) if r["status"] else \
+                   ("no such host" if r["dns_failure"] else f"no answer ({r['error']})")
+            lines.append(f"- {r['host']}: {what}")
+        ht = h["http"]
+        lines.append("- Plain http: " + (f"ends at {ht['final_url']} (HTTP {ht['status']})" if ht["status"] else
+                                         f"no answer ({ht['error']})"))
+    if o:
+        lines.append(f"- Old addresses: {o['checked']} checked; " + ", ".join(f"{n} {c.lower().replace('_', ' ')}" for c, n in o["counts"].items()))
+    lines.append("")
+    return lines
+
+
 def write_report(*, data: dict, slug: str, day: date, raw_page: bytes | None = None,
-                 root: Path | None = None) -> tuple[Path, int, Path]:
+                 root: Path | None = None, old_urls: dict | None = None) -> tuple[Path, int, Path]:
     """Writes the report (md + json) to generated/ and, if there was a page, raw_page to evidence/.
     Returns (generated folder, run number, path of the .md report).
 
@@ -200,4 +252,8 @@ def write_report(*, data: dict, slug: str, day: date, raw_page: bytes | None = N
     if raw_page:
         client_files.write_new(client_files.evidence_dir(slug, root),
                                client_files.dated_name(day, "raw_page", "html", run), raw_page)
+    if old_urls is not None:      # every address and what happened to it; the report and database hold only examples
+        client_files.write_new(client_files.evidence_dir(slug, root),
+                               client_files.dated_name(day, "old_urls", "json", run),
+                               json.dumps(old_urls, indent=2, ensure_ascii=False).encode("utf-8"))
     return generated, run, paths["md"]
