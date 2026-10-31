@@ -32,6 +32,11 @@ class LLMResult:
     output_tokens: int
     cost_usd: float
     latency_ms: int
+    stop_reason: str | None = None  # the API's word for why the model stopped; "max_tokens" means the reply was cut off
+
+    @property
+    def cut_off(self) -> bool:
+        return self.stop_reason == "max_tokens"
 
 
 def _load_prices() -> dict[str, dict[str, float]]:
@@ -75,6 +80,7 @@ def _log_run(
     latency_ms: int,
     status: str,
     error: str | None,
+    stop_reason: str | None = None,
 ) -> None:
     conn = get_connection()
     try:
@@ -83,8 +89,8 @@ def _log_run(
                 """
                 INSERT INTO runs
                     (business_id, agent, model, prompt_version, input, output,
-                     input_tokens, output_tokens, cost_usd, latency_ms, status, error)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     input_tokens, output_tokens, cost_usd, latency_ms, status, error, stop_reason)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     business_id,
@@ -99,6 +105,7 @@ def _log_run(
                     latency_ms,
                     status,
                     error,
+                    stop_reason,
                 ),
             )
     finally:
@@ -117,6 +124,7 @@ def call(
     tool_handlers: dict[str, Callable[[dict[str, Any]], Any]] | None = None,
     max_tokens: int = 4096,
     max_tool_turns: int = 8,
+    thinking: dict[str, Any] | None = None,
     client: Any = None,
 ) -> LLMResult:
     """Sends `messages` to a Claude model and returns its final text answer.
@@ -125,6 +133,13 @@ def call(
     model asks to use a tool, the matching function in `tool_handlers` runs
     and its result is fed back to the model, until the model answers with
     plain text instead of a tool call (or `max_tool_turns` is reached).
+
+    `thinking` is sent to the API as given, for example {"type": "disabled"}. Left out (None), nothing is sent and the
+    model uses its own default, so every caller that does not ask for it behaves as before. Thinking tokens are
+    billed as output and count against `max_tokens`.
+
+    A reply that stopped at `max_tokens` is cut off. It is still returned (the caller may keep what arrived), but it
+    is logged as status 'failed' with stop_reason 'max_tokens', never as a success.
 
     `client` lets tests inject a fake Anthropic client; production code
     leaves it out and a real one is created.
@@ -148,6 +163,8 @@ def call(
             )
             if tools:
                 create_kwargs["tools"] = tools
+            if thinking is not None:
+                create_kwargs["thinking"] = thinking
 
             response = client.messages.create(**create_kwargs)
             total_input_tokens += response.usage.input_tokens
@@ -182,6 +199,7 @@ def call(
             prompt_version=prompt_version,
             input_payload=input_record,
             output_payload=None,
+            stop_reason=getattr(response, "stop_reason", None),
             input_tokens=total_input_tokens,
             output_tokens=total_output_tokens,
             cost_usd=cost_usd,
@@ -196,6 +214,8 @@ def call(
         block.text for block in response.content if getattr(block, "type", None) == "text"
     )
     cost_usd = _cost(price, total_input_tokens, total_output_tokens)
+    stop_reason = response.stop_reason
+    cut_off = stop_reason == "max_tokens"
 
     _log_run(
         business_id=business_id,
@@ -208,8 +228,9 @@ def call(
         output_tokens=total_output_tokens,
         cost_usd=cost_usd,
         latency_ms=latency_ms,
-        status="success",
-        error=None,
+        status="failed" if cut_off else "success",
+        error=(f"cut off: the reply stopped at the output cap of {max_tokens:,} tokens (max_tokens)" if cut_off else None),
+        stop_reason=stop_reason,
     )
 
     return LLMResult(
@@ -218,4 +239,5 @@ def call(
         output_tokens=total_output_tokens,
         cost_usd=cost_usd,
         latency_ms=latency_ms,
+        stop_reason=stop_reason,
     )

@@ -48,7 +48,7 @@ def test_the_location_is_read_from_the_structured_data_and_printed(biz, tmp_path
     assert any("Other places the site names: Headingley" in s for s in said)
     sent = sent_to_model(client)
     assert sent["location"] == "Leeds" and sent["other_places_on_the_site"] == ["Headingley"]
-    assert "Location used: Leeds" in r.path.read_text() and "prompt questions_draft/v3" in r.path.read_text()
+    assert "Location used: Leeds" in r.path.read_text() and "prompt questions_draft/v4" in r.path.read_text()
 
 
 def test_the_location_is_read_from_an_address_written_in_the_page_text(biz, tmp_path):
@@ -469,11 +469,13 @@ def test_every_discovery_question_in_the_example_really_carries_a_place(bike_run
 
 # ---- 6. v1 and v2 are left alone ----------------------------------------------------------------------------------------------------------
 
-def test_the_v1_and_v2_prompts_are_untouched_and_v3_is_the_one_in_use():
+def test_the_v1_v2_and_v3_prompts_are_untouched_and_v4_is_the_one_in_use():
     assert hashlib.sha256((ROOT / "prompts/questions_draft/v1.md").read_bytes()).hexdigest() == \
         "f0360064f94eafd6aa73ddbf09da77a91f41748b6c21c953004a5c6dc6c14502"
     assert hashlib.sha256((ROOT / "prompts/questions_draft/v2.md").read_bytes()).hexdigest() == V2_PROMPT_SHA256
-    assert qrun.PROMPT_VERSION == "v3" and qrun.DRAFT_AGENT.prompt_path.name == "v3.md"
+    assert hashlib.sha256((ROOT / "prompts/questions_draft/v3.md").read_bytes()).hexdigest() == \
+        "79129459c36473607cc2898f75a179553c5368725ac8ddca1f148306cbaa241b"
+    assert qrun.PROMPT_VERSION == "v4" and qrun.DRAFT_AGENT.prompt_path.name == "v4.md"
 
 
 def test_the_v3_prompt_has_the_whole_brief_and_examples_that_are_not_only_dental():

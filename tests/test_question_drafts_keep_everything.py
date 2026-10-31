@@ -280,7 +280,7 @@ def test_the_card_shows_calls_input_size_output_cap_and_an_up_to_figure(biz, tmp
     said: list = []
     run(biz, tmp_path, fake(clean_set(biz)), said=said)
     card = "\n".join(said)
-    assert "Up to 3 calls" in card and "Input about" in card and "output capped at 8,000 tokens per call" in card
+    assert "Up to 3 calls" in card and "Input about" in card and "output capped at 6,000 tokens per call" in card
     assert "Up to $" in card and "Typical: not known yet" in card
 
 

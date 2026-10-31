@@ -20,26 +20,33 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Callable
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from audit.cost_gate import confirm_cost
 from core.llm import estimate_cost
 from audit.question_set import QuestionSetError, load_question_set, resolve_tags
 from core import client_files
 from core.journal import write_journal
-from core.runner import AgentDefinition, AgentOutputInvalid, run_agent
+from core.runner import AgentDefinition, AgentOutputCutOff, AgentOutputInvalid, run_agent
 from core.question_length import MEDIUM_MAX_WORDS, SHORT_MAX_WORDS
 from diagnose.fetch import Fetcher
 from diagnose.store import load_business
 from questions_draft import location as loc
 from questions_draft import plan
+from questions_draft.salvage import LIST_KEYS, salvage
 from questions_draft.inputs import DraftInputError, DraftInputs, gather_inputs, utc_day
 
 MODEL = "claude-sonnet-5"                 # price is in core/model_prices.json
-PROMPT_VERSION = "v3"           # v1 and v2 stay on disk, untouched, for the drafts and runs that used them
+PROMPT_VERSION = "v4"           # v1 to v3 stay on disk, untouched, for the drafts and runs that used them
 PROMPTS = Path(__file__).parent.parent / "prompts"
 AGENT = "questions_draft"
 ACTOR = "aeo questions draft"
+# The output cap of one call, with thinking off (step 25f). A question costs about 60 to 100 tokens in the v4 reply shape (the
+# older, fuller shape was about 105), so 32 questions are about 2,000 to 3,400 tokens. 6,000 leaves room for the longest
+# real-situation questions, a second language and the model being wordier than usual, without paying for a cap far above need.
+# Before step 25f the cap was 8,000 and the model's hidden thinking used most of it, which is why replies were cut off.
+OUTPUT_CAP = 6000
+NO_THINKING = {"type": "disabled"}        # the draft is a rule-following writing job; the prompt holds every rule
 MAX_CALLS = 3                             # the whole command: first draft, one retry, one length top-up. Never more.
 WORST_CHARS_PER_TOKEN = 3                 # pessimistic on purpose: the card's "up to" must not be beaten by a real run
 FOLLOW_UP_TOKENS_PER_QUESTION = 120       # what a later call adds: the accepted and rejected lists it is sent
@@ -69,15 +76,53 @@ class DraftedQuestion(BaseModel):
 
 
 class DraftOutput(BaseModel):
+    """v1 to v3 replies carry one flat `questions` list. v4 groups them (`discovery`, `control`, `brand`), so the kind and the
+    fields that are fixed for a group (a control is informational and not a target; a brand question has no intent) are
+    never written by the model: `all_questions` fills them in from the group."""
     model_config = ConfigDict(extra="ignore")
     local: Any = None               # does this business serve customers in one physical area? (the model's choice, shown to the operator)
     local_reason: Any = None
-    questions: list[DraftedQuestion]
+    questions: list[DraftedQuestion] = []
+    discovery: list[DraftedQuestion] = []
+    control: list[DraftedQuestion] = []
+    brand: list[DraftedQuestion] = []
+
+    @model_validator(mode="after")
+    def _has_a_list(self):
+        # "local" alone is a real reply: a local business with no place stops after step one, with no questions at all
+        if not (set(LIST_KEYS) | {"local"}) & self.model_fields_set:
+            raise ValueError("the reply has no list of questions")
+        return self
+
+    def all_questions(self, languages: list[str]) -> list[dict]:
+        """Every question as one dict, in the order: flat list, discovery, control, brand. Where only one language was asked
+        for and a question names none, it is that language (the model is not asked to write it)."""
+        out = [q.model_dump() for q in self.questions]
+        for q in self.discovery:
+            out.append({**q.model_dump(), "kind": "discovery", "control": False})
+        for q in self.control:
+            out.append({**q.model_dump(), "kind": "discovery", "control": True, "intent": "informational", "is_target": False})
+        for q in self.brand:
+            out.append({**q.model_dump(), "kind": "brand", "control": False, "is_target": False, "intent": None})
+        if len(languages) == 1:
+            for q in out:
+                if q.get("language") in (None, ""):
+                    q["language"] = languages[0]
+        return out
+
+
+def keep_what_arrived(text: str) -> DraftOutput:
+    """For a reply cut off at the output cap: every question that arrived whole, nothing else (questions_draft/salvage.py)."""
+    kept = salvage(text)
+    try:
+        return DraftOutput.model_validate(kept)
+    except ValueError:                                   # nothing arrived whole
+        return DraftOutput(questions=[])
 
 
 DRAFT_AGENT = AgentDefinition(name=AGENT, model=MODEL, prompt_version=PROMPT_VERSION,
                               prompt_path=PROMPTS / AGENT / f"{PROMPT_VERSION}.md", output_schema=DraftOutput,
-                              max_tokens=8000)
+                              max_tokens=OUTPUT_CAP, thinking=NO_THINKING, on_cut_off=keep_what_arrived)
 
 
 @dataclass
@@ -147,7 +192,7 @@ def cost_card(payload: dict, targets: plan.Targets, typical: dict | None) -> lis
     w = worst_case(payload, targets)
     lines = [f"  AI question drafting · {MODEL}",
              f"    Up to {w['calls']} calls: the first draft, one retry if some questions are dropped or missing, one top-up if a length is far under its target.",
-             f"    Input about {w['input_tokens']:,} tokens per call (a retry or top-up is sent more); output capped at {w['output_cap']:,} tokens per call.",
+             f"    Input about {w['input_tokens']:,} tokens per call (a retry or top-up is sent more); output capped at {w['output_cap']:,} tokens per call (thinking off).",
              f"    Up to ${w['usd']:.3f} (every call as big as it can be)."]
     if typical:
         lines.append(f"    Typical ${typical['usd']:.3f}: the average of the last {typical['runs']} run(s) of this command "
@@ -163,10 +208,28 @@ def _still_needed(missing: dict[tuple[str, str], int]) -> list[dict]:
 
 # ---- the run -----------------------------------------------------------------------------------------------------------------
 
-def draft_questions(conn, business: dict, *, languages: list[str] | None, size: int, note: str | None,
-                    ask: Callable[[str], str], say: Callable[[str], None], client=None, fetcher: Fetcher | None = None,
-                    clients_root: Path | None = None, today: date | None = None, location: str | None = None) -> DraftResult:
-    """Gathers what the site and the truth document say, asks the cost gate, drafts, checks, retries once, writes."""
+def draft_questions(conn, business: dict, **options) -> DraftResult:
+    """Gathers what the site and the truth document say, asks the cost gate, drafts, checks, retries once, writes.
+    If the command fails after it has called the model, the money is still spent: one journal note records the cost, so the
+    card's "Typical" figure counts failed drafts too (they write no draft file and so no note of their own)."""
+    progress: dict = {}
+    try:
+        return _draft_questions(conn, business, progress=progress, **options)
+    except Exception as exc:
+        if "started" in progress:
+            spent = _cost_since(conn, business["id"], progress["started"])
+            if spent["calls"]:
+                write_journal(business_id=business["id"], entry_type="note", actor=ACTOR, conn=conn,
+                              description=f"Question set draft failed, nothing saved: {_one_line(str(exc))[:160]}",
+                              details={"outcome": "failed", "model": MODEL, "prompt_version": PROMPT_VERSION, "calls": spent["calls"],
+                                       "input_tokens": spent["input_tokens"], "output_tokens": spent["output_tokens"],
+                                       "cost_usd": spent["cost_usd"]})
+        raise
+
+
+def _draft_questions(conn, business: dict, *, progress: dict, languages: list[str] | None, size: int, note: str | None,
+                     ask: Callable[[str], str], say: Callable[[str], None], client=None, fetcher: Fetcher | None = None,
+                     clients_root: Path | None = None, today: date | None = None, location: str | None = None) -> DraftResult:
     business = load_business(conn, business["id"])          # name, domain, website address and alternate names
     if business is None:
         raise DraftError("that business does not exist")
@@ -201,6 +264,7 @@ def draft_questions(conn, business: dict, *, languages: list[str] | None, size: 
     confirm_cost(MAX_CALLS, model=MODEL, ask=ask, say=say, lines=cost_card(payload, targets, typical_cost(conn)))
 
     started = conn.execute("SELECT now()").fetchone()[0]
+    progress["started"] = started
     calls = 0
     name, domain, alternates = business["name"], business["domain"], business["alternate_names"]
 
@@ -212,6 +276,7 @@ def draft_questions(conn, business: dict, *, languages: list[str] | None, size: 
         return MAX_CALLS - used
 
     last_reply: list = []
+    cut_offs: list[tuple[int, int]] = []      # (which model call, how many whole questions arrived) for each reply cut off at the cap
 
     def propose(extra: dict | None, key: str = "retry") -> list[dict]:
         nonlocal calls
@@ -219,10 +284,16 @@ def draft_questions(conn, business: dict, *, languages: list[str] | None, size: 
         if left <= 0:
             raise DraftError("the three model calls for this command are used up")
         calls += 1
-        out = run_agent(DRAFT_AGENT, business_id=business["id"], client=client, max_attempts=min(2, left),
-                        input_data={**payload, **({key: extra} if extra else {})})
+        try:
+            out = run_agent(DRAFT_AGENT, business_id=business["id"], client=client, max_attempts=min(2, left),
+                            input_data={**payload, **({key: extra} if extra else {})})
+        except AgentOutputCutOff as cut:
+            # The reply ran out of room. Every question that arrived whole is kept; the call is not asked again, and it is
+            # not an invalid reply. What is still missing is asked for by the next call, as usual.
+            out = cut.partial
+            cut_offs.append((MAX_CALLS - calls_left(), len(out.all_questions(languages))))
         last_reply[:] = [out]
-        return [q.model_dump() for q in out.questions]
+        return out.all_questions(languages)
 
     try:
         first = propose(None)
@@ -265,7 +336,8 @@ def draft_questions(conn, business: dict, *, languages: list[str] | None, size: 
         try:
             second = propose({"accepted": [c.text for c in fitted], "fact_topics_used": plan.topics_used(fitted),
                               "rejected": [{"text": r.text, "reasons": r.reasons} for r in rejected],
-                              "needed": _still_needed(missing)})
+                              "needed": _still_needed(missing),
+                              **({"cut_off": True} if cut_offs else {})})
         except (AgentOutputInvalid, DraftError):
             second = []
             warnings.append("The second request did not return a usable reply, so the first draft's good questions are all there is.")
@@ -291,6 +363,12 @@ def draft_questions(conn, business: dict, *, languages: list[str] | None, size: 
         fitted, left_out = plan.merge_topup(fitted, extras, targets, request["length"])
         surplus += left_out
 
+    for call_no, kept_n in cut_offs:
+        asked_again = MAX_CALLS - calls_left() > call_no
+        warnings.append(f"Reply {call_no} was cut off at the output cap ({OUTPUT_CAP:,} tokens) after {kept_n} complete question(s). "
+                        f"Those were kept" + (", and the next call asked only for what was still missing." if asked_again
+                                              else "; no further call was made, so what is missing is listed as missing."))
+
     ordered = plan.order_for_file(fitted, languages)
     spot = plan.choose_spot_check(ordered, languages, domain)
     items = [_item(c, i in spot) for i, c in enumerate(ordered)]
@@ -312,7 +390,7 @@ def draft_questions(conn, business: dict, *, languages: list[str] | None, size: 
                   description=f"Question set draft v{version} written ({len(items)} questions; not frozen)",
                   details={"draft": path.name, "questions": len(items), "facts_source": inputs.facts_source,
                            "truth_version": inputs.truth_version, "model": MODEL, "prompt_version": PROMPT_VERSION,
-                           "rejected": len(rejected), "missing": sum(missing.values()),
+                           "rejected": len(rejected), "missing": sum(missing.values()), "cut_off_replies": len(cut_offs),
                            "needs_review": sum(1 for it in items if it.get("needs_review")),
                            "calls": cost["calls"], "input_tokens": cost["input_tokens"],
                            "output_tokens": cost["output_tokens"], "cost_usd": cost["cost_usd"]})

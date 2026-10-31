@@ -168,7 +168,7 @@ def test_the_draft_is_logged_like_other_ai_runs(biz, tmp_path):
                            "WHERE business_id = %s AND agent = %s", (biz["id"], AGENT)).fetchone()
     finally:
         conn.close()
-    assert row[0] == "claude-sonnet-5" and row[1] == "v3" and (row[2], row[3]) == (3000, 1800) and float(row[4]) > 0 and row[5] == "success"
+    assert row[0] == "claude-sonnet-5" and row[1] == "v4" and (row[2], row[3]) == (3000, 1800) and float(row[4]) > 0 and row[5] == "success"
     assert r.cost["calls"] == 1 and r.cost["input_tokens"] == 3000 and abs(r.cost["cost_usd"] - float(row[4])) < 1e-9
 
 
@@ -498,7 +498,7 @@ def test_the_cost_card_shows_the_worst_case_of_three_calls(biz, tmp_path):
     run(biz, tmp_path, fake(clean_set(biz)), said=said)
     card = "\n".join(said)
     assert "Up to 3 calls" in card and "claude-sonnet-5" in card and "Up to $" in card
-    assert "output capped at 8,000 tokens per call" in card and "tokens per call" in card
+    assert "output capped at 6,000 tokens per call" in card and "tokens per call" in card
 
 
 def test_dash_dash_yes_is_not_supported():
@@ -524,7 +524,7 @@ def test_the_header_says_draft_not_frozen_and_where_it_came_from(biz, tmp_path):
     diagnosed(biz, tmp_path)
     r = run(biz, tmp_path, fake(clean_set(biz)))
     head = "\n".join(r.path.read_text().splitlines()[:8])
-    assert "DRAFT v1 (NOT FROZEN)" in head and "model claude-sonnet-5" in head and "prompt questions_draft/v3" in head
+    assert "DRAFT v1 (NOT FROZEN)" in head and "model claude-sonnet-5" in head and "prompt questions_draft/v4" in head
     assert datetime.now().date().isoformat() in head or datetime.now(timezone.utc).date().isoformat() in head
     assert "diagnosis before of" in head and "website only, every fact unconfirmed" in head and "never writes there" in head
 
@@ -568,7 +568,7 @@ def test_the_run_is_noted_in_the_journal(biz, tmp_path):
                                (biz["id"],)).fetchone()[0]
     finally:
         conn.close()
-    assert details["draft"] == "question_set_draft_v1.yaml" and details["model"] == "claude-sonnet-5" and details["prompt_version"] == "v3"
+    assert details["draft"] == "question_set_draft_v1.yaml" and details["model"] == "claude-sonnet-5" and details["prompt_version"] == "v4"
 
 
 # ---- the command ----------------------------------------------------------------------------------------------------------------------------------

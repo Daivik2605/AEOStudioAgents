@@ -195,12 +195,12 @@ def test_v1_is_untouched_and_differs_from_v2_only_in_the_length_paragraph():
 def test_the_command_uses_the_current_prompt_and_records_it(biz, tmp_path):
     from questions_draft import run as qrun
     from tests.test_questions_draft import clean_set, diagnosed, fake, run
-    assert qrun.PROMPT_VERSION == "v3" and qrun.DRAFT_AGENT.prompt_path.name == "v3.md"
+    assert qrun.PROMPT_VERSION == "v4" and qrun.DRAFT_AGENT.prompt_path.name == "v4.md"
     diagnosed(biz, tmp_path)
     client = fake(clean_set(biz))
     result = run(biz, tmp_path, client)
-    assert "prompt questions_draft/v3" in result.path.read_text()
-    assert client.messages.calls[0]["system"] == (ROOT / "prompts" / "questions_draft" / "v3.md").read_text()
+    assert "prompt questions_draft/v4" in result.path.read_text()
+    assert client.messages.calls[0]["system"] == (ROOT / "prompts" / "questions_draft" / "v4.md").read_text()
     from tests.test_questions_draft import file_items
     assert all(i["length"] == length_of(i["text"]) for i in file_items(result))
     assert "short 6 words or fewer" in result.path.read_text() and "PLAN.md section 8" in result.path.read_text()

@@ -33,6 +33,17 @@ class AgentOutputInvalid(Exception):
     """Raised when an agent's output still doesn't match its schema after one retry."""
 
 
+class AgentOutputCutOff(Exception):
+    """The reply stopped at the output cap, and the agent said how to keep what arrived (`on_cut_off`).
+    `partial` is whatever that function made of the text (it may hold nothing); `raw_text` is the text as it arrived.
+    This is not an invalid reply: nothing is retried and nothing goes to human_queue, the caller decides what to do."""
+
+    def __init__(self, message: str, *, partial: Any, raw_text: str):
+        super().__init__(message)
+        self.partial = partial
+        self.raw_text = raw_text
+
+
 @dataclass
 class AgentDefinition:
     name: str  # stored in runs.agent and client_journal.actor
@@ -43,6 +54,10 @@ class AgentDefinition:
     tools: list[dict[str, Any]] | None = None
     tool_handlers: dict[str, Callable[[dict[str, Any]], Any]] | None = None
     max_tokens: int = 4096
+    thinking: dict[str, Any] | None = None  # sent to the model as given, e.g. {"type": "disabled"}; None leaves the default
+    # Only for an agent whose reply is a long list that is useful in part: turns the text of a reply that was cut off
+    # at the cap into what can be kept. Agents without it behave as before (a cut-off reply is just not valid).
+    on_cut_off: Callable[[str], Any] | None = None
 
 
 def run_agent(
@@ -85,6 +100,7 @@ def run_agent(
                 tools=agent_def.tools,
                 tool_handlers=agent_def.tool_handlers,
                 max_tokens=agent_def.max_tokens,
+                thinking=agent_def.thinking,
                 client=client,
             )
         except Exception as exc:  # llm.call() already logged this failure to `runs`
@@ -92,11 +108,16 @@ def run_agent(
             last_raw_text = ""
             continue
 
+        if result.cut_off and agent_def.on_cut_off is not None:
+            raise AgentOutputCutOff(f"{agent_def.name}: the reply was cut off at the output cap of {agent_def.max_tokens:,} tokens",
+                                    partial=agent_def.on_cut_off(result.text), raw_text=result.text)
+
         try:
             data = json.loads(result.text)
             return agent_def.output_schema.model_validate(data)
         except (json.JSONDecodeError, ValidationError) as exc:
-            last_error = str(exc)
+            last_error = ("the reply was cut off at the output cap (max_tokens) before it was complete" if result.cut_off
+                          else str(exc))
             last_raw_text = result.text
             continue
 
