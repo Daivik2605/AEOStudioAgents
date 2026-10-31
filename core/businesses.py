@@ -147,10 +147,42 @@ def add_business(raw_url: str, name: str | None = None) -> dict:
                           description="Empty profile v1 created (no facts yet)", actor="aeo add",
                           related_table="business_profiles", related_id=profile_id,
                           details={"version": 1}, conn=conn)
+            linked = link_earlier_diagnoses(conn, business_id, domain)
     finally:
         conn.close()
     return {"id": str(business_id), "domain": domain, "website_url": website_url,
-            "name": name, "profile_id": str(profile_id)}
+            "name": name, "profile_id": str(profile_id), "linked_diagnoses": linked}
+
+
+def link_earlier_diagnoses(conn, business_id, domain: str) -> int:
+    """Attaches diagnoses made on a bare address (`aeo diagnose <url>` with no business) to the business just added, when
+    the address is this business's domain. Returns how many were linked.
+
+    Only rows with no business are touched (`business_id IS NULL`), so nothing already linked is changed and nothing is
+    deleted. Each link is noted in the journal, so the diagnosis shows up in the business's history. The pages those
+    diagnoses saved already sit in clients/<domain>/evidence/, because `aeo diagnose` names that folder after the address;
+    there is nothing to move. (The `evidence` table cannot hold anything from before a business existed: it needs one.)
+    A subdomain (shop.example.com) is a different address and is not linked.
+    """
+    rows = conn.execute("SELECT id, url, checked_at, verdict FROM diagnoses ORDER BY checked_at").fetchall()
+    linked = 0
+    for diagnosis_id, url, checked_at, verdict in rows:
+        try:
+            if parse_site(url)[0] != domain:
+                continue
+        except BusinessError:
+            continue
+        done = conn.execute("UPDATE diagnoses SET business_id = %s WHERE id = %s AND business_id IS NULL",
+                            (business_id, diagnosis_id)).rowcount
+        if not done:
+            continue
+        linked += 1
+        write_journal(business_id=business_id, entry_type="note", actor="aeo add",
+                      description=f"Linked an earlier diagnosis of {url} ({checked_at.date().isoformat()}, verdict {verdict}) "
+                                  "that was made before this business was added",
+                      related_table="diagnoses", related_id=diagnosis_id,
+                      details={"linked_earlier_diagnosis": True, "url": url, "verdict": verdict}, conn=conn)
+    return linked
 
 
 # ---- finding a business from whatever the person typed ------------------------------------------

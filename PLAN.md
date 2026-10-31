@@ -392,11 +392,11 @@ One versioned set, written **before** looking at where the client appears. Never
 **How questions are written:**
 - In the buyer's words, not the client's slogans. Vary the vocabulary buyers actually use (water station / refill station / hydration station / bottle filling station).
 - One ask per question. No private information, ever.
-- Three lengths, tagged: **short** (3–6 words, search-box style), **medium** (one conversational sentence), **long** (2–3 sentences of a real situation: place, size, date, constraint). Small specialists tend to win or lose on the long, specific ones; adding one qualifier changes most of the brands named.
+- Three lengths, tagged: **short** (6 words or fewer, search-box style; anything under 3 words counts as short), **medium** (one sentence of 7–30 words), **long** (two or more sentences, or more than 30 words: a real situation with place, size, date, constraint). An explicit length tag on a question always wins over the count. The rule lives in one function, `core/question_length.py`. Small specialists tend to win or lose on the long, specific ones; adding one qualifier changes most of the brands named.
 - Built from personas × places × needs (rent vs buy, branding, scale, sustainability, price). Places the client actually serves, including outside their home city.
 - In the buyer's language: French for Quebec buyers.
 - A few informational questions, untouched by our work, act as the control.
-- Rough mix for a 32-question set: ~24 discovery (≈30% short, 45% medium, 25% long), ~8 brand (half with the URL).
+- Rough mix for a 32-question set: ~24 discovery (40% short, 40% medium, 20% long), ~8 brand (half with the URL).
 
 ### What is deterministic, and therefore our strongest proof
 
@@ -603,6 +603,8 @@ Now: Postgres in Docker on Daivik's Mac, files in `clients/` on the Mac. With th
 | | | **Prototype — a working loop for any business, in this order (re-scoped 29 Oct 2026, v4.9)** | |
 | 12 | **`aeo status`** — change status with a required reason (§7). The decline flow already tells people to use it | ✅ Done |
 | 25 | **Diagnose additions, generic parts only:** **sitemap check** (a missing or 404 sitemap is a finding — O'land's new site had none at the apex on 15 Oct, which the diagnosis did not flag); **apex/www consistency** (both must serve the same site, or one must 301 to the other); **CDN/host detection from response headers**; **optional old-site redirect check** (fetch the old site's sitemap, confirm every old URL redirects) | ✅ Done |
+| 25c | **Make Phase A output trustworthy** — a blocked check claims nothing (a "Not checked" list, compare treats it as not run); repeated findings shown once with a count and examples; a crawler that cannot connect is retried once, then reported as unconfirmed; control questions are in no score; one length rule from §8; tests refuse to run against the dev database | ✅ Done |
+| 25d | **Question drafts that keep everything, an honest cost card, linked diagnoses** — a judgement-call question is kept and flagged `needs_review` (never in the spot check), a discovery question that names the business is re-tagged brand, exact duplicates are dropped; the prompt states exact counts per length and one top-up call fixes a bucket more than 3 under (at most 3 model calls in all); the cost card shows the worst case and a typical figure from logged runs; `aeo add` links earlier diagnoses saved for the same domain | ✅ Done |
 | 13b | **`aeo questions draft`** — AI drafts candidate buyer questions from the truth document + diagnosis (§16); a person picks and freezes. Also suggests an 8-question spot-check subset | ✅ Done |
 | 17a | **`aeo backup`**, local only — dump the database to the backup folder (§16) | ⏭ Next |
 | 18 | **`aeo brief`** — citation aggregation, content brief + outreach list | |

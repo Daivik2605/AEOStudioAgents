@@ -30,6 +30,7 @@ from core.operator import operator_name
 from truth import draft as truth_draft
 from truth.importer import TruthImportAborted, TruthImportError, TruthImportRefused, import_truth
 from diagnose import platform_data as pd
+from diagnose.display import group_findings
 from diagnose.report import decline_pitch_outline
 from diagnose.run import DiagnoseError, run_diagnosis
 from questions_draft import plan as qplan
@@ -101,6 +102,10 @@ def diagnose(
     if out.facts.infrastructure:
         typer.echo("Setup: " + out.facts.infrastructure.summary() + "  (from the response headers; information, not a finding)")
     sc = out.facts.site_checks
+    if sc and sc.not_checked:
+        typer.secho("Not checked (so no finding about these is raised; absent does not mean fine):", fg=typer.colors.YELLOW)
+        for n in sc.not_checked:
+            typer.echo(f"  - {n['label']}: {n['reason']}")
     if sc and sc.old_urls:
         o = sc.old_urls.to_json()
         typer.echo(f"Old addresses: {o['checked']} checked; " + ", ".join(
@@ -109,15 +114,20 @@ def diagnose(
     if out.ai_explanation:
         typer.echo("")
         typer.echo(out.ai_explanation)
-    typer.echo(f"\n{len(out.findings)} finding(s):")
-    for f in out.findings:
+    grouped = group_findings(out.findings)
+    typer.echo(f"\n{len(grouped)} finding(s)" + (f" ({len(out.findings)} counting repeats)" if len(grouped) != len(out.findings) else "") + ":")
+    for f in grouped:
         # Plain sentence first, code in brackets afterwards for looking it up later.
         # Continuation lines line up under the first word, not under the severity.
         prefix = f"  [{f['severity']:<8}] "
+        tag = " [unconfirmed]" if f["unconfirmed"] else ""
         typer.echo(textwrap.fill(
-            f"{f['what']}. ({f['code']})" if not f["what"].endswith((".", "!", "?")) else f"{f['what']} ({f['code']})",
+            f"{f['what']}. ({f['code']}){tag}" if not f["what"].endswith((".", "!", "?")) else f"{f['what']} ({f['code']}){tag}",
             width=TERMINAL_WIDTH, initial_indent=prefix, subsequent_indent=" " * len(prefix),
             break_long_words=False, break_on_hyphens=False))
+        for example in f["examples"]:
+            typer.echo(textwrap.fill(f"e.g. {example}", width=TERMINAL_WIDTH, initial_indent=" " * (len(prefix) + 2),
+                                     subsequent_indent=" " * (len(prefix) + 7), break_long_words=False, break_on_hyphens=False))
     for w in out.warnings:
         typer.secho(f"Warning: {w}", fg=typer.colors.YELLOW, err=True)
 
@@ -168,6 +178,8 @@ def add(
     typer.echo(f"Added {b['name'] or b['domain']} ({b['domain']}), status: prospect")
     typer.echo(f"Business id: {b['id']}")
     typer.echo("The profile is empty: no facts have been confirmed yet.")
+    if b.get("linked_diagnoses"):
+        typer.echo(f"Linked {b['linked_diagnoses']} earlier diagnosis(es) of this address to the business. Nothing was changed or deleted.")
 
 
 audit_app = typer.Typer(invoke_without_command=True, add_completion=False,
@@ -629,6 +641,7 @@ def business_status(
     reason: Optional[str] = typer.Option(None, "--reason", help="Why. Required for declined and rejected."),
     all_businesses: bool = typer.Option(False, "--all", help="One table of every business."),
     filter_status: Optional[str] = typer.Option(None, "--filter", help="With --all: only businesses with this status."),
+    include_test: bool = typer.Option(False, "--include-test", help="With --all: also list test businesses (core-test-<hex>.example), which are hidden by default."),
 ) -> None:
     """Show or change a business's status. declined = we said no; rejected = they said no."""
     if all_businesses:
@@ -636,22 +649,29 @@ def business_status(
             _fail("--all shows every business; do not combine it with a domain, --set or --reason")
         conn = get_connection()
         try:
-            rows = st.list_statuses(conn, filter_status)
+            rows = st.list_statuses(conn, filter_status, include_test=include_test)
+            hidden = 0 if include_test else st.hidden_test_businesses(conn, filter_status)
         except st.StatusError as exc:
             _fail(str(exc))
         finally:
             conn.close()
+        note = (f"\n{hidden} test business(es) are hidden (core-test-<hex>.example). Nothing is deleted; "
+                "add --include-test to show them.") if hidden else ""
         if not rows:
-            typer.echo("No businesses" + (f" with status {filter_status}." if filter_status else " yet."))
+            typer.echo("No businesses" + (f" with status {filter_status}." if filter_status else " yet.") + note)
             return
         width = max(len(r["domain"]) for r in rows + [{"domain": "Domain"}])
         typer.echo(f"{'Domain':<{width}}  {'Status':<10}  {'Engagement type':<16}  Last changed")
         for r in rows:
             typer.echo(f"{r['domain']:<{width}}  {r['status']:<10}  {(r['engagement_type'] or '-'):<16}  {_utc(r['last_changed'])}")
+        if note:
+            typer.echo(note)
         return
 
     if filter_status:
         _fail("--filter goes with --all (aeo status --all --filter declined)")
+    if include_test:
+        _fail("--include-test goes with --all (aeo status --all --include-test)")
     if not domain:
         _fail("give a domain (aeo status example.com) or --all")
     if reason and not set_to:

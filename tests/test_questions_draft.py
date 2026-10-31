@@ -71,7 +71,7 @@ def clean_set(b: dict, languages=("en", "fr"), words: Words | None = None) -> li
     for lang in languages:
         sizes = ["short"] * 4 + ["medium"] * 4 + ["long"] * 2
         for i, size in enumerate(sizes):
-            n = {"short": 5, "medium": 14, "long": 30}[size]
+            n = {"short": 5, "medium": 14, "long": 40}[size]
             out.append(q(w.many(n), language=lang, is_target=i < 2))
         out += [q(w.many(6) + "?", language=lang, intent="informational", control=True) for _ in range(2)]
         out += [q(t.format(n=name, d=domain), kind="brand", language=lang) for t in brand.get(lang, brand["en"])]
@@ -153,7 +153,7 @@ def test_the_draft_is_logged_like_other_ai_runs(biz, tmp_path):
                            "WHERE business_id = %s AND agent = %s", (biz["id"], AGENT)).fetchone()
     finally:
         conn.close()
-    assert row[0] == "claude-sonnet-5" and row[1] == "v1" and (row[2], row[3]) == (3000, 1800) and float(row[4]) > 0 and row[5] == "success"
+    assert row[0] == "claude-sonnet-5" and row[1] == "v2" and (row[2], row[3]) == (3000, 1800) and float(row[4]) > 0 and row[5] == "success"
     assert r.cost["calls"] == 1 and r.cost["input_tokens"] == 3000 and abs(r.cost["cost_usd"] - float(row[4])) < 1e-9
 
 
@@ -166,7 +166,7 @@ def test_the_summary_shows_counts_the_spot_check_and_the_cost(biz, tmp_path):
 
 # ---- length is counted -------------------------------------------------------------------------------------------------------------------
 
-@pytest.mark.parametrize("words, expected", [(1, "short"), (11, "short"), (12, "medium"), (25, "medium"), (26, "long"), (60, "long")])
+@pytest.mark.parametrize("words, expected", [(1, "short"), (6, "short"), (7, "medium"), (30, "medium"), (31, "long"), (60, "long")])
 def test_length_comes_from_the_word_count(words, expected):
     assert plan.length_of(" ".join(["word"] * words)) == expected
 
@@ -183,7 +183,7 @@ def test_the_models_own_length_label_is_ignored(biz, tmp_path):
 
 # ---- what the checks reject -----------------------------------------------------------------------------------------------------------
 
-def test_a_discovery_question_with_the_brand_is_rejected_and_retried(biz, tmp_path):
+def test_a_discovery_question_with_the_brand_is_retagged_brand_and_flagged_not_dropped(biz, tmp_path):
     diagnosed(biz, tmp_path)
     bad = clean_set(biz)
     w = Words(99)
@@ -193,26 +193,29 @@ def test_a_discovery_question_with_the_brand_is_rejected_and_retried(biz, tmp_pa
     client = fake(bad, replacements)
     said: list = []
     r = run(biz, tmp_path, client, said=said)
-    assert r.calls == 2 and len(file_items(r)) == 32 and r.missing == {}
-    assert len(r.rejected) == 2 and all("names the business" in x.reasons[0] for x in r.rejected)
-    assert not any(biz["name"] in i["text"] or biz["domain"] in i["text"] for i in file_items(r) if i["type"] == "discovery")
-    retry = sent_to_model(client, 1)["retry"]                     # the model was told what was wrong and what is needed
-    assert len(retry["rejected"]) == 2 and "names the business" in retry["rejected"][0]["reasons"][0]
-    assert retry["needed"] == [{"group": "discovery", "language": "en", "count": 2}]
+    assert r.calls == 2 and r.rejected == [] and r.missing == {}                  # nothing dropped; the 2 missing discovery were asked for
+    items = file_items(r)
+    for text in (bad[0]["text"], bad[1]["text"]):
+        item = next(i for i in items if i["text"] == text)
+        assert item["type"] == "brand" and item["is_target"] is False and item["control"] is False and item["spot_check"] is False
+        assert "intent" not in item and item["needs_review"] is True and "re-tagged brand" in item["review_reason"]
+    assert not any(biz["name"] in i["text"] or biz["domain"] in i["text"] for i in items if i["type"] == "discovery")
+    retry = sent_to_model(client, 1)["retry"]
+    assert retry["rejected"] == [] and retry["needed"] == [{"group": "discovery", "language": "en", "count": 2}]
     assert any("asking once more" in s for s in said)
 
 
 def test_a_retry_that_still_fails_keeps_the_good_questions_and_says_what_is_missing(biz, tmp_path):
     diagnosed(biz, tmp_path)
     bad = clean_set(biz)
-    bad[0] = q(f"Is {biz['name']} good?")
-    bad[1] = q(f"Is {biz['name']} cheap?")
-    client = fake(bad, [q(f"Where to find {biz['domain']} stations?")])        # the retry is no better, and there is no third call
+    bad[0] = {**bad[0], "text": ""}                                            # nothing to keep: dropped
+    bad[1] = {**bad[1], "text": "   "}
+    client = fake(bad, [q(bad[2]["text"])])                                    # the retry only repeats a question
     r = run(biz, tmp_path, client)
     assert r.calls == 2 and len(file_items(r)) == 30                           # never padded
     assert r.missing == {("discovery", "en"): 2} and len(r.rejected) == 3
     text = "\n".join(summary_lines(r))
-    assert "STILL MISSING" in text and "2 discovery question(s) in en" in text and "were rejected and are NOT in the file" in text
+    assert "STILL MISSING" in text and "2 discovery question(s) in en" in text and "Dropped, not in the file: 3" in text
     assert "STILL MISSING: 2 discovery in en" in r.path.read_text()
 
 
@@ -225,15 +228,16 @@ def test_a_brand_question_that_does_not_name_the_business_is_rejected(biz, tmp_p
     assert r.missing == {("brand", "fr"): 1}
 
 
-def test_a_brand_question_asserting_an_unconfirmed_fact_is_rejected(biz, tmp_path):
+def test_a_claim_question_is_kept_and_flagged_but_one_relying_on_an_unconfirmed_fact_is_dropped(biz, tmp_path):
     diagnosed(biz, tmp_path)                                       # a prospect: nothing is confirmed
     items = clean_set(biz)
     items[10] = q(f"Does {biz['name']} offer water stations for festivals?", kind="brand")      # states a claim, relies on nothing
     items[11] = q(f"What events does {biz['name']} serve?", kind="brand", relies=[1])            # relies on a fact that is not confirmed
     r = run(biz, tmp_path, fake(items, items[10:12]))
-    reasons = " | ".join(" ".join(x.reasons) for x in r.rejected)
-    assert "states a claim" in reasons and "not confirmed facts" in reasons
-    assert not any("offer water stations" in i["text"] for i in file_items(r))
+    assert any("not confirmed facts" in " ".join(x.reasons) for x in r.rejected)
+    assert not any("What events does" in i["text"] for i in file_items(r))
+    claim = next(i for i in file_items(r) if "offer water stations" in i["text"])
+    assert claim["needs_review"] is True and "states a claim" in claim["review_reason"]
 
 
 def test_a_brand_question_relying_on_a_confirmed_fact_is_allowed(biz, tmp_path):
@@ -245,25 +249,16 @@ def test_a_brand_question_relying_on_a_confirmed_fact_is_allowed(biz, tmp_path):
     assert r.rejected == [] and any("Does" in i["text"] for i in file_items(r))
 
 
-def test_duplicates_and_near_duplicates_are_rejected(biz, tmp_path):
+def test_duplicates_and_near_duplicates_are_dropped(biz, tmp_path):
     diagnosed(biz, tmp_path)
     items = clean_set(biz)
     items[1] = dict(items[0], text=items[0]["text"].upper())                  # the same question in capitals
     items[2] = dict(items[3], text=items[3]["text"] + " today")               # one word added
     r = run(biz, tmp_path, fake(items, []))
-    assert len(r.rejected) == 2 and all("repeats an earlier question" in x.reasons[0] for x in r.rejected)
+    assert len(r.rejected) == 2
+    assert "exact repeat" in r.rejected[0].reasons[0] and "repeats an earlier question" in r.rejected[1].reasons[0]
     assert plan.near_duplicate("best water stations in Toronto", "Best water stations in Toronto!")
     assert not plan.near_duplicate("best water stations in Toronto", "how do I choose a caterer for a wedding")
-
-
-@pytest.mark.parametrize("change", [{"kind": "other"}, {"language": "de"}, {"intent": "sales"}, {"is_target": "yes"},
-                                    {"relies_on_fact_ids": "none"}, {"text": ""}])
-def test_a_malformed_tag_rejects_that_question(biz, tmp_path, change):
-    diagnosed(biz, tmp_path)
-    items = clean_set(biz)
-    items[0] = {**items[0], **change}
-    r = run(biz, tmp_path, fake(items, []))
-    assert len(r.rejected) == 1 and len(file_items(r)) == 31 and r.missing
 
 
 def test_contradictory_tags_are_corrected_not_trusted(biz, tmp_path):
@@ -471,7 +466,7 @@ def test_without_a_keyboard_the_cost_gate_refuses_and_nothing_is_spent_or_saved(
     with pytest.raises(CostGateAborted):
         run(biz, tmp_path, client, said=said)
     assert client.messages.calls == [] and not list((tmp_path / "clients").rglob("question_set_draft_*"))
-    assert any("person must be at the keyboard" in s for s in said) and any("~$" in s for s in said)
+    assert any("person must be at the keyboard" in s for s in said) and any("Up to $" in s for s in said)
 
 
 def test_anything_but_a_typed_yes_aborts(biz, tmp_path):
@@ -482,12 +477,13 @@ def test_anything_but_a_typed_yes_aborts(biz, tmp_path):
     assert client.messages.calls == []
 
 
-def test_the_cost_card_shows_a_worst_case_for_two_calls(biz, tmp_path):
+def test_the_cost_card_shows_the_worst_case_of_three_calls(biz, tmp_path):
     diagnosed(biz, tmp_path)
     said: list = []
     run(biz, tmp_path, fake(clean_set(biz)), said=said)
-    card = next(s for s in said if "AI question drafting" in s)
-    assert "2 calls" in card and "claude-sonnet-5" in card and "~$" in card
+    card = "\n".join(said)
+    assert "Up to 3 calls" in card and "claude-sonnet-5" in card and "Up to $" in card
+    assert "output capped at 8,000 tokens per call" in card and "tokens per call" in card
 
 
 def test_dash_dash_yes_is_not_supported():
@@ -513,7 +509,7 @@ def test_the_header_says_draft_not_frozen_and_where_it_came_from(biz, tmp_path):
     diagnosed(biz, tmp_path)
     r = run(biz, tmp_path, fake(clean_set(biz)))
     head = "\n".join(r.path.read_text().splitlines()[:8])
-    assert "DRAFT v1 (NOT FROZEN)" in head and "model claude-sonnet-5" in head and "prompt questions_draft/v1" in head
+    assert "DRAFT v1 (NOT FROZEN)" in head and "model claude-sonnet-5" in head and "prompt questions_draft/v2" in head
     assert datetime.now().date().isoformat() in head or datetime.now(timezone.utc).date().isoformat() in head
     assert "diagnosis before of" in head and "website only, every fact unconfirmed" in head and "never writes there" in head
 
@@ -557,7 +553,7 @@ def test_the_run_is_noted_in_the_journal(biz, tmp_path):
                                (biz["id"],)).fetchone()[0]
     finally:
         conn.close()
-    assert details["draft"] == "question_set_draft_v1.yaml" and details["model"] == "claude-sonnet-5" and details["prompt_version"] == "v1"
+    assert details["draft"] == "question_set_draft_v1.yaml" and details["model"] == "claude-sonnet-5" and details["prompt_version"] == "v2"
 
 
 # ---- the command ----------------------------------------------------------------------------------------------------------------------------------

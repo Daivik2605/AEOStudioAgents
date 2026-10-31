@@ -11,11 +11,11 @@ import re
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
+from core.question_length import LENGTHS, length_of  # noqa: F401  (the one rule, PLAN.md section 8; re-exported here for callers)
 from dossier.questions import brand_terms, contains_brand, normalise
 
 KINDS = ("discovery", "brand")
 INTENTS = ("commercial", "informational")
-LENGTHS = ("short", "medium", "long")
 
 MIN_SIZE, MAX_SIZE, DEFAULT_SIZE = 12, 100, 32
 DISCOVERY_SHARE = 0.75                  # of the whole set, controls included: 24 of 32
@@ -23,21 +23,10 @@ CONTROLS_PER_32 = 4
 LENGTH_AIM = {"short": 0.40, "medium": 0.40, "long": 0.20}
 LENGTH_TOLERANCE = 0.15                 # the summary warns when a length is this far from its aim
 
-SHORT_UNDER = 12                        # words: short is fewer than 12
-MEDIUM_UP_TO = 25                       # medium is 12 to 25; long is more than 25
-
 SPOT_TOTAL, SPOT_DISCOVERY, SPOT_BRAND = 8, 5, 3
 
 NEAR_DUPLICATE_RATIO = 0.88             # SequenceMatcher on the normalised text
 NEAR_DUPLICATE_OVERLAP = 0.8            # shared words / all words
-
-
-def length_of(text: str) -> str:
-    """short / medium / long from the words actually in the question. The model's own idea of length is ignored."""
-    words = len(text.split())
-    if words < SHORT_UNDER:
-        return "short"
-    return "medium" if words <= MEDIUM_UP_TO else "long"
 
 
 def _round(x: float) -> int:
@@ -91,6 +80,9 @@ class Candidate:
     is_target: bool
     control: bool
     relies_on: list[int] = field(default_factory=list)
+    needs_review: bool = False          # kept, but a person must look (a judgement call, not a certain fault)
+    review_reason: str | None = None
+    repairs: list[str] = field(default_factory=list)   # tags fixed where the intent was clear
 
     @property
     def group(self) -> str:
@@ -127,28 +119,139 @@ def near_duplicate(a: str, b: str) -> bool:
     return SequenceMatcher(None, na, nb).ratio() >= NEAR_DUPLICATE_RATIO
 
 
+def _flag(c: Candidate, reason: str) -> None:
+    c.needs_review = True
+    c.review_reason = reason if not c.review_reason else f"{c.review_reason}; {reason}"
+
+
+def _as_bool(value):
+    """True/False for a real bool, or for the words true/false/yes/no; None for unset; the value itself if unclear."""
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in ("true", "yes", "false", "no"):
+        return value.strip().lower() in ("true", "yes")
+    return value
+
+
+def _repair_tags(item: dict, languages: list[str], terms) -> tuple[dict | None, list[str], list[str], list[str]]:
+    """(tags, repairs, flags, problems). `problems` is non-empty only when there is no question text to keep.
+    A repair is made only where the intent is clear (case, spaces, "true" for true, a brand question that cannot
+    have an intent). Where it is not clear the question is kept with the tag empty and a flag says so."""
+    repairs: list[str] = []
+    flags: list[str] = []
+    text = item.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return None, [], [], ["it has no question text"]
+    text = text.strip()
+    tags: dict = {"text": text}
+
+    kind = item.get("kind")
+    if isinstance(kind, str) and kind.strip().lower() in KINDS:
+        tags["kind"] = kind.strip().lower()
+        if tags["kind"] != kind:
+            repairs.append(f"kind \"{kind}\" written as {tags['kind']}")
+    else:
+        tags["kind"] = "brand" if contains_brand(text, terms) else "discovery"
+        flags.append(f"kind was {kind!r}; worked out from the text as {tags['kind']}")
+
+    lang = item.get("language")
+    wanted = {l.lower(): l for l in languages}
+    if lang in languages:
+        tags["language"] = lang
+    elif isinstance(lang, str) and lang.strip().lower() in wanted:
+        tags["language"] = wanted[lang.strip().lower()]
+        repairs.append(f"language \"{lang}\" written as {tags['language']}")
+    elif len(languages) == 1:
+        tags["language"] = languages[0]
+        flags.append(f"language was {lang!r}; only {languages[0]} was asked for, so it was set to that")
+    else:
+        tags["language"] = None
+        flags.append(f"language was {lang!r} and several were asked for: set it by hand")
+
+    for flag in ("is_target", "control"):
+        value = _as_bool(item.get(flag))
+        if isinstance(value, bool) or value is None:
+            tags[flag] = bool(value)
+            if item.get(flag) is not None and not isinstance(item.get(flag), bool):
+                repairs.append(f"{flag} \"{item[flag]}\" written as {tags[flag]}")
+        else:
+            tags[flag] = False
+            flags.append(f"{flag} was {item[flag]!r}; set to false")
+
+    intent = item.get("intent")
+    if tags["kind"] == "brand":
+        tags["intent"] = None
+        if intent not in (None, ""):
+            repairs.append("a brand question has no intent: removed")
+        if tags["control"]:
+            tags["control"] = False
+            repairs.append("a brand question cannot be a control: control set to false")
+    else:
+        if isinstance(intent, str) and intent.strip().lower() in INTENTS:
+            tags["intent"] = intent.strip().lower()
+            if tags["intent"] != intent:
+                repairs.append(f"intent \"{intent}\" written as {tags['intent']}")
+        else:
+            tags["intent"] = None
+            flags.append(f"intent was {intent!r}: set it by hand")
+
+    ids = item.get("relies_on_fact_ids")
+    if ids is None:
+        tags["relies_on"] = []
+    elif isinstance(ids, list):
+        fixed = []
+        for i in ids:
+            if isinstance(i, bool):
+                continue
+            if isinstance(i, int):
+                fixed.append(i)
+            elif isinstance(i, str) and i.strip().isdigit():
+                fixed.append(int(i.strip()))
+                repairs.append(f"fact id \"{i}\" written as {int(i.strip())}")
+        tags["relies_on"] = fixed
+        if len(fixed) != len(ids):
+            flags.append("some fact ids were not whole numbers and were left out")
+    else:
+        tags["relies_on"] = []
+        flags.append("relies_on_fact_ids was not a list and was ignored")
+    return tags, repairs, flags, []
+
+
 def check_questions(raw: list[dict], *, name: str | None, domain: str | None, alternates: list[str] | None,
                     languages: list[str], confirmed_fact_ids: set[int],
                     already: list[Candidate]) -> tuple[list[Candidate], list[Rejection]]:
-    """Splits what the model proposed into questions we keep and questions we reject, with the reasons.
-    `already` are questions kept earlier (the first pass, when this is the retry), so a retry cannot repeat them."""
+    """Splits what the model proposed into questions we keep and questions we drop, with the reasons.
+
+    Dropped: no question text; an exact repeat; a near repeat; a brand question that does not name the business;
+    a brand question relying on a fact that is not confirmed. Everything else that is only a judgement call is KEPT
+    and flagged needs_review with a short reason: the yes/no "claim" heuristic, a discovery question that names the
+    business (re-tagged brand), tags that could not be repaired. `already` are questions kept earlier (the retry
+    cannot repeat them)."""
     terms = brand_terms(name, domain, alternates)
     kept: list[Candidate] = []
     rejected: list[Rejection] = []
     for item in raw:
-        text = item.get("text") if isinstance(item, dict) else None
-        problems = _tag_problems(item, languages)
-        if problems:
-            rejected.append(Rejection(text if isinstance(text, str) else str(item)[:120], problems))
+        if not isinstance(item, dict):
+            rejected.append(Rejection(str(item)[:120], ["it is not an object with the question's tags"]))
             continue
-        text = text.strip()
-        kind, language = item["kind"], item["language"]
-        control = bool(item.get("control") or False)
-        relies_on = list(item.get("relies_on_fact_ids") or [])
-        reasons: list[str] = []
+        tags, repairs, flags, problems = _repair_tags(item, languages, terms)
+        if problems:
+            rejected.append(Rejection(str(item.get("text"))[:120], problems))
+            continue
+        text, kind = tags["text"], tags["kind"]
+        control, relies_on = tags["control"], tags["relies_on"]
         names_brand = contains_brand(text, terms)
+        c = Candidate(text=text, kind=kind, language=tags["language"], intent=tags["intent"],
+                      is_target=tags["is_target"], control=control, relies_on=relies_on, repairs=repairs)
+        for f in flags:
+            _flag(c, f)
+
+        reasons: list[str] = []
         if kind == "discovery" and names_brand:
-            reasons.append(f"a discovery question names the business (\"{names_brand}\"): the buyer has never heard of it")
+            # Re-tagged, not dropped: the question is fine as a brand question. Target, intent, control and spot check reset.
+            c.kind, c.intent, c.is_target, c.control = "brand", None, False, False
+            _flag(c, f"drafted as a discovery question but it names the business (\"{names_brand}\"): re-tagged brand")
+            kind = "brand"
         if kind == "brand" and not names_brand:
             reasons.append("a brand question must name the business or its web address")
         if kind == "brand":
@@ -156,48 +259,22 @@ def check_questions(raw: list[dict], *, name: str | None, domain: str | None, al
             if unconfirmed:
                 reasons.append(f"it relies on fact(s) {unconfirmed}, which are not confirmed facts")
             elif asserts_a_claim(text) and not relies_on:
-                reasons.append("it is a yes/no question that states a claim about the business, and no confirmed fact is given for it")
+                _flag(c, "a yes/no question that states a claim about the business, with no confirmed fact given for it")
         for other in [*already, *kept]:
+            if normalise(text) == normalise(other.text):
+                reasons.append(f"it is an exact repeat of an earlier question (\"{other.text}\")")
+                break
             if near_duplicate(text, other.text):
                 reasons.append(f"it repeats an earlier question (\"{other.text}\")")
                 break
         if reasons:
             rejected.append(Rejection(text, reasons))
             continue
-        # A control or brand question is never a target, and a control is always informational: coerced, not rejected.
-        intent = item.get("intent") if kind == "discovery" else None
-        if control:
-            intent = "informational"
-        kept.append(Candidate(text=text, kind=kind, language=language, intent=intent,
-                              is_target=bool(item.get("is_target") or False) and kind == "discovery" and not control,
-                              control=control, relies_on=relies_on))
+        if c.control:
+            c.intent = "informational"                       # a control is always informational: coerced, not rejected
+        c.is_target = c.is_target and c.kind == "discovery" and not c.control
+        kept.append(c)
     return kept, rejected
-
-
-def _tag_problems(item, languages: list[str]) -> list[str]:
-    if not isinstance(item, dict):
-        return ["it is not an object with the question's tags"]
-    problems = []
-    if not isinstance(item.get("text"), str) or not item["text"].strip():
-        problems.append("it has no question text")
-    if item.get("kind") not in KINDS:
-        problems.append(f"kind must be one of {', '.join(KINDS)} (got {item.get('kind')!r})")
-    if item.get("language") not in languages:
-        problems.append(f"language must be one of {', '.join(languages)} (got {item.get('language')!r})")
-    kind = item.get("kind")
-    if kind == "discovery" and item.get("intent") not in INTENTS:
-        problems.append(f"intent must be one of {', '.join(INTENTS)} for a discovery question (got {item.get('intent')!r})")
-    if kind == "brand" and item.get("intent") not in (None, ""):
-        problems.append("a brand question has no intent")
-    for flag in ("is_target", "control"):
-        if flag in item and item[flag] is not None and not isinstance(item[flag], bool):
-            problems.append(f"{flag} must be true or false (got {item[flag]!r})")
-    if kind == "brand" and item.get("control") is True:
-        problems.append("a brand question cannot be a control")
-    ids = item.get("relies_on_fact_ids")
-    if ids is not None and not (isinstance(ids, list) and all(isinstance(i, int) and not isinstance(i, bool) for i in ids)):
-        problems.append("relies_on_fact_ids must be a list of whole numbers")
-    return problems
 
 
 # ---- how many of each we have, and what is missing ---------------------------------------------------------------------------
@@ -210,22 +287,97 @@ def bucket_counts(items: list[Candidate]) -> dict[tuple[str, str], int]:
 
 
 def fit_to_targets(items: list[Candidate], targets: Targets) -> tuple[list[Candidate], list[Candidate], dict[tuple[str, str], int]]:
-    """(kept, surplus, missing). Takes at most the target number of each (group, language), in the order given.
-    Extra questions are reported as surplus, not silently used; shortfalls are reported as missing, never padded."""
+    """(kept, surplus, missing). Takes at most the target number of each (group, language). Clean questions are
+    considered before flagged ones, so a flagged question only takes a place a clean one has not filled; otherwise the
+    order given decides. A question whose language could not be settled (flagged) is kept outside the places.
+    Extra clean questions are reported as surplus, not silently used; extra flagged ones are kept (nothing flagged is dropped); shortfalls are reported as missing, never padded."""
     seen: dict[tuple[str, str], int] = {}
     kept, surplus = [], []
-    for c in items:
+    for c in sorted(items, key=lambda c: c.needs_review):          # stable: clean first, file order inside each
+        if c.language not in targets.by_language:
+            kept.append(c)
+            continue
         key = (c.group, c.language)
-        want = targets.by_language.get(c.language, {}).get(c.group, 0)
+        want = targets.by_language[c.language].get(c.group, 0)
         if seen.get(key, 0) < want:
             seen[key] = seen.get(key, 0) + 1
             kept.append(c)
+        elif c.needs_review:
+            kept.append(c)                  # a flagged question is never left out; the file may then hold more than the plan
         else:
             surplus.append(c)
+    # keep the order the questions arrived in
+    position = {id(c): i for i, c in enumerate(items)}
+    kept.sort(key=lambda c: position[id(c)])
     missing = {(group, lang): want - seen.get((group, lang), 0)
                for lang, row in targets.by_language.items() for group, want in row.items()
                if want - seen.get((group, lang), 0) > 0}
     return kept, surplus, missing
+
+
+# ---- the length mix: what is short, and one top-up for a bucket that is far under ------------------------------------------------
+
+TOPUP_GAP = 3                           # a length bucket more than this many questions under its target gets a top-up
+
+
+def length_counts(items: list[Candidate]) -> dict[str, int]:
+    counts = {name: 0 for name in LENGTHS}
+    for c in items:
+        counts[length_of(c.text)] += 1
+    return counts
+
+
+def topup_request(items: list[Candidate], targets: Targets) -> dict | None:
+    """The one bucket to top up, or None. The bucket furthest under its target, if it is more than TOPUP_GAP under.
+    Says how many, and in which (group, language) places the new questions can go: the places that hold the most
+    questions of a length that is over its target, since those are the ones a new question replaces."""
+    counts = length_counts(items)
+    gaps = {name: targets.length_aim[name] - counts[name] for name in LENGTHS}
+    bucket = max(LENGTHS, key=lambda name: gaps[name])            # first in LENGTHS order wins a tie
+    if gaps[bucket] <= TOPUP_GAP:
+        return None
+    over = {name for name in LENGTHS if counts[name] > targets.length_aim[name]}
+    room: dict[tuple[str, str], int] = {}
+    for c in items:
+        if c.language in targets.by_language and length_of(c.text) in over and not c.control:
+            room[(c.group, c.language)] = room.get((c.group, c.language), 0) + 1
+    need = gaps[bucket]
+    places = []
+    for key, n in sorted(room.items(), key=lambda kv: (-kv[1], kv[0])):
+        if need <= 0:
+            break
+        take = min(n, need)
+        places.append({"group": key[0], "language": key[1], "count": take})
+        need -= take
+    count = sum(p["count"] for p in places)
+    return {"length": bucket, "count": count, "places": places} if count else None
+
+
+def merge_topup(items: list[Candidate], extras: list[Candidate], targets: Targets, length: str) -> tuple[list[Candidate], list[Candidate]]:
+    """(new list, left out). A new question of the asked length goes into an empty place if its (group, language) has
+    one; otherwise it takes the place of one question in the same (group, language) whose length is over its target,
+    flagged ones first, last in the file first. A new question that fits no place is left out. Nothing is added beyond
+    the plan."""
+    items = list(items)
+    left_out: list[Candidate] = []
+    for new in extras:
+        if length_of(new.text) != length or length_counts(items)[length] >= targets.length_aim[length]:
+            left_out.append(new)
+            continue
+        counts = length_counts(items)
+        taken = sum(1 for c in items if (c.group, c.language) == (new.group, new.language))
+        if taken < targets.by_language.get(new.language, {}).get(new.group, 0):
+            items.append(new)                              # an empty place (a question was dropped): fill it, replace nothing
+            continue
+        victims = [c for c in items if (c.group, c.language) == (new.group, new.language) and not c.control
+                   and counts[length_of(c.text)] > targets.length_aim[length_of(c.text)]]
+        if not victims:
+            left_out.append(new)
+            continue
+        victim = sorted(victims, key=lambda c: (not c.needs_review, -items.index(c)))[0]
+        items[items.index(victim)] = new
+        left_out.append(victim)
+    return items, left_out
 
 
 def order_for_file(items: list[Candidate], languages: list[str]) -> list[Candidate]:
@@ -233,7 +385,7 @@ def order_for_file(items: list[Candidate], languages: list[str]) -> list[Candida
     rank = {name: i for i, name in enumerate(LENGTHS)}
     group_rank = {"discovery": 0, "control": 1, "brand": 2}
     lang_rank = {lang: i for i, lang in enumerate(languages)}
-    return sorted(items, key=lambda c: (group_rank[c.group], lang_rank[c.language], rank[length_of(c.text)]))
+    return sorted(items, key=lambda c: (group_rank[c.group], lang_rank.get(c.language, len(languages)), rank[length_of(c.text)]))
 
 
 # ---- the spot check, chosen by a fixed rule -------------------------------------------------------------------------------------
@@ -241,7 +393,7 @@ def order_for_file(items: list[Candidate], languages: list[str]) -> list[Candida
 def choose_spot_check(items: list[Candidate], languages: list[str], domain: str | None) -> list[int]:
     """Indexes (into `items`) of the questions flagged spot_check. The rule, with no AI and no randomness:
 
-      - never a control; 5 discovery and 3 brand where there are that many, else the other kind makes up the eight
+      - never a control and never a question flagged needs_review; 5 discovery and 3 brand where there are that many, else the other kind makes up the eight
       - within each kind, every requested language appears at least once (in the order the languages were given)
       - across the whole set, every length present appears at least once, as far as the eight places allow
       - at least one brand question that uses the web address, if there is one
@@ -249,8 +401,8 @@ def choose_spot_check(items: list[Candidate], languages: list[str], domain: str 
 
     Within each step the first matching question, in the order given, wins."""
     host = (domain or "").lower().removeprefix("www.")
-    disc = [i for i, c in enumerate(items) if c.kind == "discovery" and not c.control]
-    brand = [i for i, c in enumerate(items) if c.kind == "brand" and not c.control]
+    disc = [i for i, c in enumerate(items) if c.kind == "discovery" and not c.control and not c.needs_review]
+    brand = [i for i, c in enumerate(items) if c.kind == "brand" and not c.control and not c.needs_review]
 
     n_disc, n_brand = min(SPOT_DISCOVERY, len(disc)), min(SPOT_BRAND, len(brand))
     spare = SPOT_TOTAL - n_disc - n_brand            # one kind is short: the other kind takes its places

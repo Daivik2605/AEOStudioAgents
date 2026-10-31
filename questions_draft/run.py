@@ -23,22 +23,27 @@ from typing import Any, Callable
 from pydantic import BaseModel, ConfigDict
 
 from audit.cost_gate import confirm_cost
+from core.llm import estimate_cost
 from audit.question_set import QuestionSetError, load_question_set, resolve_tags
 from core import client_files
 from core.journal import write_journal
 from core.runner import AgentDefinition, AgentOutputInvalid, run_agent
+from core.question_length import MEDIUM_MAX_WORDS, SHORT_MAX_WORDS
 from diagnose.fetch import Fetcher
 from diagnose.store import load_business
 from questions_draft import plan
 from questions_draft.inputs import DraftInputError, DraftInputs, gather_inputs, utc_day
 
 MODEL = "claude-sonnet-5"                 # price is in core/model_prices.json
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"           # v1 stays on disk, untouched, for the drafts and runs that used it
 PROMPTS = Path(__file__).parent.parent / "prompts"
 AGENT = "questions_draft"
 ACTOR = "aeo questions draft"
-OUTPUT_TOKENS_PER_QUESTION = 70           # rough: a question and its tags as JSON
-CHARS_PER_TOKEN = 4                       # rough: used only for the cost card's estimate
+MAX_CALLS = 3                             # the whole command: first draft, one retry, one length top-up. Never more.
+WORST_CHARS_PER_TOKEN = 3                 # pessimistic on purpose: the card's "up to" must not be beaten by a real run
+FOLLOW_UP_TOKENS_PER_QUESTION = 120       # what a later call adds: the accepted and rejected lists it is sent
+FOLLOW_UP_EXTRA_TOKENS = 400
+TYPICAL_RUNS = 5                          # how many recent runs the "typical" figure averages
 DRAFT_NAME = re.compile(r"^question_set_draft_v(\d+)\.(?:yaml|md)$")
 
 
@@ -79,6 +84,8 @@ class DraftResult:
     rejected: list[plan.Rejection] = field(default_factory=list)
     surplus: list[str] = field(default_factory=list)
     missing: dict[tuple[str, str], int] = field(default_factory=dict)
+    topped_up: str | None = None                        # the length asked for in the top-up call, if one was made
+    repairs: list[str] = field(default_factory=list)    # tags fixed quietly, one line each
     warnings: list[str] = field(default_factory=list)
     source_lines: list[str] = field(default_factory=list)
     calls: int = 0
@@ -100,9 +107,39 @@ def build_payload(business: dict, inputs: DraftInputs, targets: plan.Targets, la
     return payload
 
 
-def _estimate_tokens(payload: dict, targets: plan.Targets) -> tuple[int, int]:
+def worst_case(payload: dict, targets: plan.Targets) -> dict:
+    """The most one run of this command can cost: MAX_CALLS calls, each with the whole output cap. Later calls are sent
+    more (the lists of accepted and rejected questions, or the model's own earlier reply), so they are given more input."""
     system = DRAFT_AGENT.prompt_path.read_text()
-    return ((len(system) + len(json.dumps(payload))) // CHARS_PER_TOKEN, targets.size * OUTPUT_TOKENS_PER_QUESTION + 200)
+    first_in = (len(system) + len(json.dumps(payload))) // WORST_CHARS_PER_TOKEN
+    later_in = first_in + DRAFT_AGENT.max_tokens + targets.size * FOLLOW_UP_TOKENS_PER_QUESTION + FOLLOW_UP_EXTRA_TOKENS
+    cap = DRAFT_AGENT.max_tokens
+    usd = estimate_cost(MODEL, first_in, cap) + (MAX_CALLS - 1) * estimate_cost(MODEL, later_in, cap)
+    return {"calls": MAX_CALLS, "input_tokens": first_in, "later_input_tokens": later_in, "output_cap": cap, "usd": usd}
+
+
+def typical_cost(conn) -> dict | None:
+    """The average real cost of this command's last few runs, from what each run wrote to the journal. None if none logged."""
+    rows = conn.execute("SELECT (details->>'cost_usd')::numeric FROM client_journal WHERE actor = %s AND entry_type = 'note' "
+                        "AND details ? 'cost_usd' ORDER BY created_at DESC LIMIT %s", (ACTOR, TYPICAL_RUNS)).fetchall()
+    costs = [float(r[0]) for r in rows]
+    if not costs:
+        return None
+    return {"runs": len(costs), "usd": sum(costs) / len(costs), "low": min(costs), "high": max(costs)}
+
+
+def cost_card(payload: dict, targets: plan.Targets, typical: dict | None) -> list[str]:
+    w = worst_case(payload, targets)
+    lines = [f"  AI question drafting · {MODEL}",
+             f"    Up to {w['calls']} calls: the first draft, one retry if some questions are dropped or missing, one top-up if a length is far under its target.",
+             f"    Input about {w['input_tokens']:,} tokens per call (a retry or top-up is sent more); output capped at {w['output_cap']:,} tokens per call.",
+             f"    Up to ${w['usd']:.3f} (every call as big as it can be)."]
+    if typical:
+        lines.append(f"    Typical ${typical['usd']:.3f}: the average of the last {typical['runs']} run(s) of this command "
+                     f"(${typical['low']:.3f} to ${typical['high']:.3f}).")
+    else:
+        lines.append("    Typical: not known yet; no earlier run of this command has logged its cost.")
+    return lines
 
 
 def _still_needed(missing: dict[tuple[str, str], int]) -> list[dict]:
@@ -137,19 +174,28 @@ def draft_questions(conn, business: dict, *, languages: list[str] | None, size: 
         say(line)
 
     payload = build_payload(business, inputs, targets, languages, note)
-    # The cost gate: a card and a typed yes, and a refusal with no person at the keyboard. Worst case is shown (two calls).
-    confirm_cost(2, model=MODEL, ask=ask, say=say, tokens=_estimate_tokens(payload, targets),
-                 label="AI question drafting (a second call only if some questions are rejected)")
+    # The cost gate: the worst case (every call, as big as it can be) and, separately, what recent runs really cost.
+    confirm_cost(MAX_CALLS, model=MODEL, ask=ask, say=say, lines=cost_card(payload, targets, typical_cost(conn)))
 
     started = conn.execute("SELECT now()").fetchone()[0]
     calls = 0
     name, domain, alternates = business["name"], business["domain"], business["alternate_names"]
 
-    def propose(extra: dict | None) -> list[dict]:
+    def calls_left() -> int:
+        """What is left of the three calls. Counted from the `runs` table, so a model call made inside run_agent
+        (its own retry for a reply that is not valid JSON) spends the budget too."""
+        used = conn.execute("SELECT count(*) FROM runs WHERE business_id = %s AND agent = %s AND created_at >= %s",
+                            (business["id"], AGENT, started)).fetchone()[0]
+        return MAX_CALLS - used
+
+    def propose(extra: dict | None, key: str = "retry") -> list[dict]:
         nonlocal calls
+        left = calls_left()
+        if left <= 0:
+            raise DraftError("the three model calls for this command are used up")
         calls += 1
-        out = run_agent(DRAFT_AGENT, business_id=business["id"], client=client,
-                        input_data={**payload, **({"retry": extra} if extra else {})})
+        out = run_agent(DRAFT_AGENT, business_id=business["id"], client=client, max_attempts=min(2, left),
+                        input_data={**payload, **({key: extra} if extra else {})})
         return [q.model_dump() for q in out.questions]
 
     try:
@@ -165,7 +211,7 @@ def draft_questions(conn, business: dict, *, languages: list[str] | None, size: 
 
     warnings: list[str] = []
     if rejected or missing:
-        say(f"{len(rejected)} question(s) were rejected and {sum(missing.values())} are missing: asking once more.")
+        say(f"{len(rejected)} question(s) were dropped and {sum(missing.values())} are missing: asking once more.")
         try:
             second = propose({"accepted": [c.text for c in fitted],
                               "rejected": [{"text": r.text, "reasons": r.reasons} for r in rejected],
@@ -178,26 +224,51 @@ def draft_questions(conn, business: dict, *, languages: list[str] | None, size: 
         fitted, extra_surplus, missing = plan.fit_to_targets([*fitted, *more], targets)
         surplus += extra_surplus
 
+    # One top-up for a length that is far under its target; it asks for that length only.
+    topped_up = None
+    request = plan.topup_request(fitted, targets)
+    if request and calls_left() > 0:
+        say(f"The mix is {request['count']} or more short on {request['length']} questions: asking once for those.")
+        try:
+            third = propose({"length": request["length"], "count": request["count"], "places": request["places"],
+                             "accepted": [c.text for c in fitted]}, key="topup")
+        except (AgentOutputInvalid, DraftError):
+            third = []
+            warnings.append("The top-up request did not return a usable reply, so the length mix is as the earlier calls left it.")
+        topped_up = request["length"]
+        extras, rejected_topup = plan.check_questions(third, already=fitted, **check)
+        rejected += rejected_topup
+        fitted, left_out = plan.merge_topup(fitted, extras, targets, request["length"])
+        surplus += left_out
+
     ordered = plan.order_for_file(fitted, languages)
     spot = plan.choose_spot_check(ordered, languages, domain)
     items = [_item(c, i in spot) for i, c in enumerate(ordered)]
     if len(spot) < plan.SPOT_TOTAL:
         warnings.append(f"Only {len(spot)} question(s) could be flagged for the spot check (it needs {plan.SPOT_TOTAL}).")
-    warnings += _length_warnings(items)
+    warnings += _length_warnings(items, targets)
+    if len(items) > targets.size:
+        warnings.append(f"The file holds {len(items)} questions, {len(items) - targets.size} more than the {targets.size} asked for, "
+                        "because flagged questions are kept. Remove or reword them when you review.")
 
     version, path, header_warnings = _write(items, business=business, inputs=inputs, languages=languages, targets=targets,
                                             note=note, rejected=rejected, missing=missing,
                                             clients_root=clients_root, today=today or date.today())
     warnings += header_warnings
+    cost = _cost_since(conn, business["id"], started)
     write_journal(business_id=business["id"], entry_type="note", actor=ACTOR, conn=conn,
                   description=f"Question set draft v{version} written ({len(items)} questions; not frozen)",
                   details={"draft": path.name, "questions": len(items), "facts_source": inputs.facts_source,
                            "truth_version": inputs.truth_version, "model": MODEL, "prompt_version": PROMPT_VERSION,
-                           "rejected": len(rejected), "missing": sum(missing.values())})
+                           "rejected": len(rejected), "missing": sum(missing.values()),
+                           "needs_review": sum(1 for it in items if it.get("needs_review")),
+                           "calls": cost["calls"], "input_tokens": cost["input_tokens"],
+                           "output_tokens": cost["output_tokens"], "cost_usd": cost["cost_usd"]})
     return DraftResult(path=path, version=version, languages=languages, targets=targets, items=items,
                        spot_check=[it["text"] for it in items if it["spot_check"]], rejected=rejected,
-                       surplus=[c.text for c in surplus], missing=missing, warnings=warnings,
-                       source_lines=source_lines, calls=calls, cost=_cost_since(conn, business["id"], started))
+                       surplus=[c.text for c in surplus], missing=missing, warnings=warnings, topped_up=topped_up,
+                       repairs=[f"\"{c.text}\": {r}" for c in ordered for r in c.repairs],
+                       source_lines=source_lines, calls=calls, cost=cost)
 
 
 def _item(c: plan.Candidate, spot: bool) -> dict:
@@ -205,16 +276,21 @@ def _item(c: plan.Candidate, spot: bool) -> dict:
     if c.kind == "discovery":
         item["intent"] = c.intent
     item.update({"length": plan.length_of(c.text), "language": c.language, "is_target": c.is_target,
-                 "control": c.control, "spot_check": spot})
+                 "control": c.control, "spot_check": spot and not c.needs_review})
+    if c.needs_review:                                   # only flagged questions carry the two fields
+        item["needs_review"] = True
+        item["review_reason"] = c.review_reason
     return item
 
 
-def _length_warnings(items: list[dict]) -> list[str]:
+def _length_warnings(items: list[dict], targets: plan.Targets) -> list[str]:
     out = []
     for length in plan.LENGTHS:
-        share = sum(1 for i in items if i["length"] == length) / len(items) if items else 0
-        if abs(share - plan.LENGTH_AIM[length]) > plan.LENGTH_TOLERANCE:
-            out.append(f"Length mix: {share:.0%} {length} (the aim is {plan.LENGTH_AIM[length]:.0%}). Edit the draft if you want it closer.")
+        have = sum(1 for i in items if i["length"] == length)
+        share = have / len(items) if items else 0
+        if abs(share - plan.LENGTH_AIM[length]) > plan.LENGTH_TOLERANCE or targets.length_aim[length] - have > plan.TOPUP_GAP:
+            out.append(f"Length mix: {have} {length} ({share:.0%}); the aim is {targets.length_aim[length]} ({plan.LENGTH_AIM[length]:.0%}). "
+                       "Not padded. Edit the draft if you want it closer.")
     return out
 
 
@@ -251,11 +327,15 @@ def render_file(items: list[dict], *, version: int, business: dict, inputs: Draf
         f"# Facts used: {used}. Based on: {based_on}. Site text: {inputs.page_source}.",
         f"# Languages: {', '.join(languages)}. Size asked for: {targets.size}." + (f" Operator note: {_one_line(note)}" if note else ""),
         "# Freezing means a person moving a reviewed copy into question_sets/. This command never writes there.",
-        "# Tags: type (discovery/brand), intent, length (counted from the words: short under 12, medium 12-25, long over 25),",
+        f"# Tags: type (discovery/brand), intent, length (counted: short {SHORT_MAX_WORDS} words or fewer, medium one sentence of "
+        f"{SHORT_MAX_WORDS + 1}-{MEDIUM_MAX_WORDS}, long two or more sentences or over {MEDIUM_MAX_WORDS}; PLAN.md section 8),",
         "#       language, is_target, control (unrelated topic, to notice drift), spot_check (the eight for the quick Phase A check).",
     ]
+    flagged = sum(1 for it in items if it.get("needs_review"))
+    if flagged:
+        lines.append(f"# {flagged} question(s) are flagged needs_review: true, each with a review_reason. A person decides whether to keep, reword or remove them.")
     if rejected:
-        lines.append(f"# {len(rejected)} proposed question(s) were rejected by the checks and are not in this file (see the command's summary).")
+        lines.append(f"# {len(rejected)} proposed question(s) were dropped by the checks and are not in this file (see the command's summary).")
     if missing:
         lines.append("# STILL MISSING: " + ", ".join(f"{n} {g} in {lang}" for (g, lang), n in sorted(missing.items())) + ". Add them by hand.")
     lines += [f"note: {json.dumps('DRAFT, not frozen. Generated by AI from ' + used + '. Review every question before freezing.')}",
@@ -308,16 +388,24 @@ def summary_lines(r: DraftResult) -> list[str]:
         return out
     kinds = count("type")
     controls = sum(1 for it in r.items if it["control"])
+    flagged = [it for it in r.items if it.get("needs_review")]
+    clean = [it for it in r.items if not it.get("needs_review")]
     lines = ["", f"Draft v{r.version} saved (NOT frozen): {r.path}",
              f"{len(r.items)} of {r.targets.size} questions: {kinds.get('discovery', 0)} discovery"
              f" (of which {controls} control) and {kinds.get('brand', 0)} brand.",
              "By length: " + ", ".join(f"{n} {k}" for k, n in count("length").items()) +
-             " (aim: " + ", ".join(f"{n} {k}" for k, n in r.targets.length_aim.items()) + ").",
+             " (aim: " + ", ".join(f"{n} {k}" for k, n in r.targets.length_aim.items()) + ")." +
+             (f" A top-up for {r.topped_up} questions was asked." if r.topped_up else ""),
              "By language: " + ", ".join(f"{n} {k}" for k, n in count("language").items()) + "."]
-    lines += ["", f"The {len(r.spot_check)} spot-check questions:"] + [f"  {i}. {t}" for i, t in enumerate(r.spot_check, start=1)]
-    if r.rejected:
-        lines += ["", f"{len(r.rejected)} question(s) were rejected and are NOT in the file:"]
-        lines += [f"  - \"{x.text}\" — " + "; ".join(x.reasons) for x in r.rejected]
+    lines += ["", f"The {len(r.spot_check)} spot-check questions (never a flagged one):"] + [f"  {i}. {t}" for i, t in enumerate(r.spot_check, start=1)]
+
+    lines += ["", f"1. Kept, clean: {len(clean)} question(s)."]
+    if r.repairs:
+        lines += [f"   {len(r.repairs)} tag(s) were repaired where the intent was clear:"] + [f"   - {x}" for x in r.repairs]
+    lines += ["", f"2. Kept and FLAGGED for review (needs_review: true in the file): {len(flagged)} question(s)."]
+    lines += [f"   - \"{it['text']}\" — {it['review_reason']}" for it in flagged]
+    lines += ["", f"3. Dropped, not in the file: {len(r.rejected)} question(s)."]
+    lines += [f"   - \"{x.text}\" — " + "; ".join(x.reasons) for x in r.rejected]
     if r.missing:
         lines += ["", "STILL MISSING (not padded; add by hand or run the command again):"]
         lines += [f"  - {n} {g} question(s) in {lang}" for (g, lang), n in sorted(r.missing.items())]

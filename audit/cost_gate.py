@@ -45,8 +45,8 @@ def card_lines(calls: int, model: str, *, claim_checks: int = 0, label: str = "A
 
 def confirm_cost(calls: int, *, model: str, claim_checks: int = 0,
                  ask: Callable[[str], str], say: Callable[[str], None], label: str = "AI extraction",
-                 tokens: tuple[int, int] | None = None) -> None:
-    """Prints the cost card, then asks for `yes`. Anything else raises CostGateAborted.
+                 tokens: tuple[int, int] | None = None, lines: list[str] | None = None) -> None:
+    """Prints the cost card, then asks for `yes`. A caller whose cost is not "N equal calls" can give the card's `lines`. Anything else raises CostGateAborted.
 
     With no terminal on stdin (piped or scheduled) the card is still printed, for the log, then
     the run is refused: spending money always needs a person at the keyboard. There is no
@@ -54,7 +54,7 @@ def confirm_cost(calls: int, *, model: str, claim_checks: int = 0,
     """
     if calls <= 0:
         return                                   # nothing to read, nothing to pay for
-    for line in card_lines(calls, model, claim_checks=claim_checks, label=label, tokens=tokens):
+    for line in (lines if lines is not None else card_lines(calls, model, claim_checks=claim_checks, label=label, tokens=tokens)):
         say(line)
     if not stdin_is_tty():
         say(NO_TERMINAL_MESSAGE)

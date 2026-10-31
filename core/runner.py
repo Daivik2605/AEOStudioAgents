@@ -51,15 +51,17 @@ def run_agent(
     business_id: str | UUID,
     input_data: dict[str, Any],
     client: Any = None,
+    max_attempts: int = 2,
 ) -> BaseModel:
+    """`max_attempts` is 2 (one try, one retry with the error explained). A caller with a fixed call budget can pass 1."""
     system = agent_def.prompt_path.read_text()
     messages: list[dict[str, Any]] = [{"role": "user", "content": json.dumps(input_data)}]
 
     last_error: str | None = None
     last_raw_text: str = ""
 
-    for attempt in range(2):
-        if attempt == 1:
+    for attempt in range(max_attempts):
+        if attempt >= 1:
             messages.append({"role": "assistant", "content": last_raw_text})
             messages.append(
                 {

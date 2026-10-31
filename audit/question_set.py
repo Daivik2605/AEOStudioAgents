@@ -13,6 +13,8 @@
         language: fr              # optional: the language the buyer asks in
         control: true             # optional: an informational question we deliberately do not work on
         spot_check: true          # optional: part of the small first-look set
+        needs_review: true        # optional: a drafted question a person must look at before freezing
+        review_reason: "..."      # optional: why (only meaningful with needs_review)
 
 The version is the file's name without ".yaml" (here: "oland-stations_v1"), so
 the file and its version can never disagree. The name must end in _v1, _v2 ...
@@ -42,7 +44,8 @@ import psycopg
 import yaml
 
 # The word-matching rules for "does this question name the client" live with the dossier, which needed them first.
-from dossier.questions import LENGTHS, TYPES, brand_terms, contains_brand, length_of
+from core.question_length import LENGTHS, length_for
+from dossier.questions import TYPES, brand_terms, contains_brand
 
 
 class QuestionSetError(Exception):
@@ -62,6 +65,8 @@ class Question:
     language: str | None = None
     control: bool = False
     spot_check: bool = False
+    needs_review: bool = False
+    review_reason: str | None = None
 
 
 @dataclass
@@ -119,15 +124,17 @@ def load_question_set(path: str | Path) -> QuestionSet:
     # keeps the fingerprint it was frozen with. (What the audit works out itself is not in the file, so not here.)
     def canonical_entry(q: Question):
         if (q.intent is None and not q.is_target and q.type is None and q.length is None
-                and q.language is None and not q.control and not q.spot_check):
+                and q.language is None and not q.control and not q.spot_check and not q.needs_review):
             return q.text
         entry = {"text": q.text, "intent": q.intent, "is_target": q.is_target}
         for key in ("type", "length", "language"):
             if getattr(q, key) is not None:
                 entry[key] = getattr(q, key)
-        for key in ("control", "spot_check"):
+        for key in ("control", "spot_check", "needs_review"):
             if getattr(q, key):
                 entry[key] = True
+        if q.needs_review and q.review_reason:
+            entry["review_reason"] = q.review_reason
         return entry
     canonical = [canonical_entry(q) for q in items]
     fingerprint = hashlib.sha256(json.dumps(canonical, ensure_ascii=False).encode("utf-8")).hexdigest()
@@ -139,7 +146,8 @@ def _parse_question(filename: str, entry) -> Question:
         entry = {"text": entry}
     if not isinstance(entry, dict):
         raise QuestionSetError(f"{filename}: every question must be text, or a mapping with 'text:'")
-    extra = set(entry) - {"text", "intent", "is_target", "type", "length", "language", "control", "spot_check"}
+    extra = set(entry) - {"text", "intent", "is_target", "type", "length", "language", "control", "spot_check",
+                           "needs_review", "review_reason"}
     if extra:
         raise QuestionSetError(f"{filename}: a question has fields not supported: {', '.join(sorted(extra))}")
     text = entry.get("text")
@@ -158,12 +166,16 @@ def _parse_question(filename: str, entry) -> Question:
     if language is not None and (not isinstance(language, str) or not language.strip()):
         raise QuestionSetError(f"{filename}: language must be text such as en or fr (got {language!r})")
     flags = {}
-    for key in ("control", "spot_check"):
+    for key in ("control", "spot_check", "needs_review"):
         flags[key] = entry.get(key, False)
         if not isinstance(flags[key], bool):
             raise QuestionSetError(f"{filename}: {key} must be true or false (got {flags[key]!r})")
+    reason = entry.get("review_reason")
+    if reason is not None and not isinstance(reason, str):
+        raise QuestionSetError(f"{filename}: review_reason must be text (got {reason!r})")
     return Question(text=text.strip(), intent=intent, is_target=target, type=kind, length=length,
-                    language=language.strip() if language else None, **flags)
+                    language=language.strip() if language else None,
+                    review_reason=reason.strip() if reason and reason.strip() else None, **flags)
 
 
 def resolve_tags(qs: QuestionSet, business_name: str | None, domain: str | None) -> tuple[list[dict], list[str]]:
@@ -191,8 +203,9 @@ def resolve_tags(qs: QuestionSet, business_name: str | None, domain: str | None)
         kind = q.type or ("brand" if found else "discovery")
         resolved.append({"text": q.text, "intent": q.intent, "is_target": q.is_target,
                          "type": kind, "type_source": "tag" if q.type else "derived from the text",
-                         "length": q.length or length_of(q.text), "length_source": "tag" if q.length else "word count",
-                         "language": q.language, "control": q.control, "spot_check": q.spot_check})
+                         "length": length_for(q.text, q.length)[0], "length_source": length_for(q.text, q.length)[1],
+                         "language": q.language, "control": q.control, "spot_check": q.spot_check,
+                         "needs_review": q.needs_review, "review_reason": q.review_reason})
     return resolved, warnings
 
 
