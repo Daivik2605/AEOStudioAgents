@@ -8,17 +8,20 @@ Same input, same answer, no sampling, so no range is needed or shown."""
 from __future__ import annotations
 
 from compare.errors import CompareError
-from diagnose.codes import CHECK_FOR_CODE, subject_removed_by
+from diagnose.codes import check_for, subject_removed_by
+from diagnose.not_checked import CONTENT_CHECKS, content_checks_ran, site_checks_ran
 
 SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 COLUMNS = "id, checkpoint, checked_at, platform, platform_plan, verdict, findings, url, business_id, site_checks"
 
 
 def _row(r) -> dict:
-    # Which of the step 25 checks this diagnosis ran. A diagnosis made before step 25 ran none of them: [] here, not "unknown".
-    ran = list((r[9] or {}).get("checks_ran", []))
+    # Which checks this diagnosis ran. One made before step 25 ran none of the sitemap / address checks: they are absent there, not
+    # "unknown". One made from step 25c on records every check it ran, and leaves out those it could not (blocked, or the
+    # page did not load).
+    ran, content = site_checks_ran(r[9]), content_checks_ran(r[9])
     return {"id": str(r[0]), "checkpoint": r[1], "checked_at": r[2], "platform": r[3], "plan": r[4], "verdict": r[5],
-            "findings": r[6] or [], "url": r[7], "checks_ran": ran}
+            "findings": r[6] or [], "url": r[7], "checks_ran": ran, "content_ran": content}
 
 
 def pick_diagnosis(conn, business_id: str, label: str, given: str | None) -> dict | None:
@@ -68,8 +71,10 @@ def compare_diagnoses(a: dict, b: dict, work: list[dict], until: str) -> dict:
     # is only "new" if that check ran in A. Otherwise it is listed as not compared, never as fixed or new.
     # (`checks_ran` is absent on a diagnosis passed in as plain data: then everything is compared, as before.)
     def not_run(code: str, side: dict) -> bool:
-        check, ran = CHECK_FOR_CODE.get(code), side.get("checks_ran")
-        return check is not None and ran is not None and check not in ran
+        check, ran = check_for(code), side.get("checks_ran")
+        if check is None or ran is None:
+            return False
+        return check not in [*ran, *side.get("content_ran", CONTENT_CHECKS)]
     not_rechecked = sorted(c for c in fa if c not in fb and not_run(c, b))
     not_compared = sorted(c for c in fb if c not in fa and not_run(c, a))
 

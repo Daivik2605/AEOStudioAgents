@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
+from diagnose.crawler import looks_like_bot_check
 from diagnose.fetch import FetchResult, Fetcher, MAX_REDIRECT_HOPS, RequestBudgetExceeded
 
 SITE_CHECK_UA = "AEO-Studio-Site-Check/1.0 (a site health check; at most 2 requests per second)"
@@ -95,6 +96,7 @@ class SitemapCheck:
     children_followed: int = 0
     children_not_followed: int = 0
     stopped_early: str | None = None
+    blocked: str | None = None                     # why a request came back as a bot check: then "missing" means nothing
 
     @property
     def found(self) -> bool:
@@ -107,7 +109,7 @@ class SitemapCheck:
                 "hosts_in_sitemap": self.hosts_in_sitemap, "mismatched_urls": self.mismatched_urls,
                 "mismatch_examples": self.mismatch_examples, "children_followed": self.children_followed,
                 "children_not_followed": self.children_not_followed, "fetched": self.fetched,
-                "stopped_early": self.stopped_early}
+                "stopped_early": self.stopped_early, "blocked": self.blocked}
 
 
 def check_sitemap(fetcher: Fetcher, origin: str, robots_raw: str | None, robots_ok: bool) -> SitemapCheck:
@@ -123,6 +125,8 @@ def check_sitemap(fetcher: Fetcher, origin: str, robots_raw: str | None, robots_
     def fetch(url: str, *, child: bool) -> tuple[str, list[str], FetchResult]:
         got = fetcher.get(url, SITE_CHECK_UA)
         kind, locs = "not_xml", []
+        if result.blocked is None and (why := looks_like_bot_check(got)):
+            result.blocked = f"{url}: {why}"
         if got.status == 200:
             result.reachable = True
             kind, locs = parse_sitemap(got.body)
@@ -185,6 +189,7 @@ class HostRow:
     has_content: bool = False
     followed_status: int | None = None   # where the redirect ends up (only asked when there was a redirect)
     followed_url: str | None = None
+    blocked: str | None = None           # the first answer looks like a bot check
 
     @property
     def answered_200(self) -> bool:
@@ -201,7 +206,8 @@ class HostRow:
     def to_json(self) -> dict:
         return {"host": self.host, "status": self.status, "location": self.location,
                 "redirects_to_host": self.redirects_to_host, "error": self.error, "dns_failure": self.dns_failure,
-                "has_content": self.has_content, "followed_status": self.followed_status, "followed_url": self.followed_url}
+                "has_content": self.has_content, "followed_status": self.followed_status, "followed_url": self.followed_url,
+                "blocked": self.blocked}
 
 
 @dataclass
@@ -213,6 +219,12 @@ class HostsCheck:
     http_final_url: str | None = None
     http_error: str | None = None
     stopped_early: str | None = None
+    http_blocked: str | None = None
+
+    @property
+    def blocked(self) -> str | None:
+        """Why any of these requests looked like a bot check, if one did. Then nothing about the addresses can be claimed."""
+        return self.apex.blocked or self.www.blocked or self.http_blocked
 
     @property
     def http_ends_at_https(self) -> bool | None:
@@ -225,13 +237,15 @@ class HostsCheck:
         return {"canonical_host": self.canonical_host, "apex": self.apex.to_json(), "www": self.www.to_json(),
                 "http": {"status": self.http_status, "final_url": self.http_final_url, "error": self.http_error,
                          "ends_at_https": self.http_ends_at_https},
-                "stopped_early": self.stopped_early}
+                "stopped_early": self.stopped_early, "blocked": self.blocked}
 
 
 def _row(fetcher: Fetcher, host: str, scheme: str = "https") -> HostRow:
     row = HostRow(host=host)
     first = fetcher.get(f"{scheme}://{host}/", SITE_CHECK_UA, follow_redirects=False)
     row.status, row.error, row.dns_failure = first.status, first.error, first.dns_failure
+    if why := looks_like_bot_check(first):
+        row.blocked = f"{host}: {why}"
     row.has_content = first.status == 200 and len(first.text.strip()) >= MIN_CONTENT_CHARS
     location = first.headers.get("location")
     if first.status in REDIRECTS and location:
@@ -252,6 +266,8 @@ def check_hosts(fetcher: Fetcher, canonical_host: str) -> HostsCheck:
         result.www = _row(fetcher, f"www.{bare}")
         plain = fetcher.get(f"http://{canonical_host}/", SITE_CHECK_UA)
         result.http_status, result.http_final_url, result.http_error = plain.status, plain.final_url or None, plain.error
+        if why := looks_like_bot_check(plain):
+            result.http_blocked = f"http://{canonical_host}/: {why}"
     except RequestBudgetExceeded as exc:
         result.stopped_early = str(exc)
     return result
@@ -376,14 +392,21 @@ class SiteChecks:
     hosts: HostsCheck | None = None
     old_urls: OldUrlsCheck | None = None
     requests_made: int = 0             # how many requests these checks made, for the report's total
+    # The checks that read the page itself (render, structured_data, llms), when they ran. Kept here so one list says
+    # which checks ran, and compare can tell "fixed" from "not checked this time".
+    content_ran: list[str] = field(default_factory=list)
+    # [{"check", "label", "reason", "codes"}]: checks that did NOT run, or were blocked, and why (step 25c).
+    # A finding that depends on one of these is never raised, and compare never calls it fixed or new.
+    not_checked: list[dict] = field(default_factory=list)
 
     @property
     def checks_ran(self) -> list[str]:
-        return [name for name, value in (("sitemap", self.sitemap), ("hosts", self.hosts), ("old_urls", self.old_urls))
-                if value is not None]
+        """The step 25 checks that ran and were not blocked. The page checks are in `content_ran`."""
+        return [name for name, value in (("sitemap", self.sitemap), ("hosts", self.hosts),
+                                         ("old_urls", self.old_urls)) if value is not None]
 
     def to_json(self) -> dict:
-        return {"checks_ran": self.checks_ran,
+        return {"checks_ran": self.checks_ran, "content_ran": self.content_ran, "not_checked": self.not_checked,
                 "sitemap": self.sitemap.to_json() if self.sitemap else None,
                 "hosts": self.hosts.to_json() if self.hosts else None,
                 "old_urls": self.old_urls.to_json() if self.old_urls else None}

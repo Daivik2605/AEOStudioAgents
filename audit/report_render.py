@@ -147,6 +147,9 @@ def render_markdown(data: dict) -> str:
             f"gap and share of voice. **{mix['brand_questions']} brand question(s)** ({mix['brand_answers']} answers read): "
             "the buyer already knows the name. These measure recognition and accuracy, and are kept out of visibility, "
             "because AI always names a business it was asked about by name (PLAN.md §8)."]
+    if mix.get("control_questions"):
+        out[-1] += (f" **{mix['control_questions']} control question(s)** ({mix['control_answers']} answers) are unrelated topics; "
+                    "they are in no figure at all and are shown in their own section below.")
     if mix["types_derived_from_text"]:
         out.append(f"{mix['types_derived_from_text']} question(s) did not say which kind they were, so it was worked out from "
                    "whether the question names the client.")
@@ -178,6 +181,19 @@ def render_markdown(data: dict) -> str:
         out += [f"Recognition is the share of brand-question answers in which AI knew the business at all: "
                 f"**{pct(r['value'])}** ({range_text(r)}), {based_on(r)} answers, from {br['questions']} question(s). "
                 "It says nothing about visibility: these questions gave AI the name.", ""]
+
+    # ---- control questions ----
+    ctl = data.get("controls")
+    if ctl and ctl["answers"]:
+        out += ["## Control questions", "",
+                f"{ctl['questions']} control question(s): unrelated topics asked to notice when an engine's answers drift for reasons "
+                "that have nothing to do with the client. They are not part of any figure in this report; they are shown here only.", ""]
+        for a in ctl["answers"]:
+            named = ("not read by the model" if a["businesses_named"] is None else
+                     ("named: " + ", ".join(a["businesses_named"]) if a["businesses_named"] else "named no business"))
+            out += [f"- Q{a['number']} · {a['label']} · run {a['repeat']} · {named}", f"  - Question: {a['question']}",
+                    f"  - Answer: {a['excerpt'] or '(empty)'}"]
+        out.append("")
 
     # ---- by engine ----
     if data["by_engine"] is not None:

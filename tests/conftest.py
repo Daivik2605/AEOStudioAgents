@@ -28,19 +28,22 @@ from typing import Any
 import pytest
 
 from core.db import ENV_FILE, _load_env_file, get_connection
+from tests.db_guard import check_connected, check_urls
 
 
 @pytest.fixture(scope="session", autouse=True)
 def _use_test_database() -> None:
+    """Sends every test to the test database, and refuses to run if that is not a safe *_test database (tests/db_guard.py)."""
     _load_env_file(ENV_FILE)
+    dev_url = os.environ.get("DATABASE_URL")                     # read before it is replaced below
     test_url = os.environ.get("TEST_DATABASE_URL")
-    if not test_url:
-        raise RuntimeError(
-            "TEST_DATABASE_URL is not set (checked environment and .env) -- "
-            "tests refuse to run against DATABASE_URL directly, so they never "
-            "write test data into the real dev database"
-        )
+    expected = check_urls(test_url, dev_url)
     os.environ["DATABASE_URL"] = test_url
+    conn = get_connection()
+    try:
+        check_connected(conn, expected)
+    finally:
+        conn.close()
 
 
 @pytest.fixture

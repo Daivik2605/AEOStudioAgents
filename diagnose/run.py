@@ -26,11 +26,12 @@ from urllib.parse import urlsplit
 from core.checkpoints import CheckpointError, check_checkpoint
 from core.db import get_connection
 from diagnose import explain, platform_data as pd, report, store
-from diagnose.crawler import BROWSER_UA, challenge_reason, run_crawler_test
+from diagnose.crawler import BROWSER_UA, challenge_reason, looks_like_bot_check, run_crawler_test
 from diagnose.facts import Facts
 from diagnose.fetch import Fetcher, RequestBudgetExceeded
 from diagnose.findings import build_findings
 from diagnose.html_utils import parse_page
+from diagnose.not_checked import assess_block, blocked_entry, entry
 from diagnose.infrastructure import detect_infrastructure
 from diagnose.platform_detect import detect
 from diagnose.render import check_render
@@ -133,25 +134,48 @@ def _run(url, business, conn, checkpoint, fetcher, clients_root, explain_client,
     usable = reachable and page.status < 400 and not challenge_reason(page)
 
     # 3. robots.txt as a bot, and /llms.txt.
+    llms_blocked = None
     if reachable:
         try:
             facts.robots = check_robots(fetcher, final_url, page.headers)
+        except RequestBudgetExceeded as exc:
+            warnings.append(f"Stopped early: {exc}.")
+
+    # Were we blocked? If so, nothing that depends on reading the site may be claimed (step 25c): the checks are
+    # skipped, listed under "Not checked", and left out of `checks_ran` so that compare does not call them fixed or new.
+    blocked = assess_block(page, facts.crawler, facts.robots) if reachable else None
+    if reachable and blocked is None:
+        try:
             origin = f"{urlsplit(final_url).scheme}://{urlsplit(final_url).netloc}"
             facts.llms = fetcher.get(f"{origin}/llms.txt", BROWSER_UA)
+            llms_blocked = looks_like_bot_check(facts.llms)
+            if llms_blocked:
+                facts.llms = None
         except RequestBudgetExceeded as exc:
             warnings.append(f"Stopped early: {exc}.")
 
     # 3b. Step 25. What is in front of the site (information only), then the checks that apply to any website.
     facts.infrastructure = detect_infrastructure(page.headers) if reachable else None
     if reachable:
-        facts.site_checks = run_site_checks(fetcher, facts, final_url, old_urls, warnings)
+        facts.site_checks = run_site_checks(fetcher, facts, final_url, old_urls, warnings, blocked=blocked)
+        if blocked is None and not usable:
+            # The page did not load (a 404 or a server error, not a bot check): there is nothing to read.
+            why = f"the page returned HTTP {page.status}, so we couldn't read it"
+            facts.site_checks.not_checked += [entry("render", why), entry("structured_data", why)]
+        elif blocked is not None:
+            facts.site_checks.not_checked += [blocked_entry(c, blocked) for c in ("render", "structured_data", "llms")]
+        if llms_blocked:
+            facts.site_checks.not_checked.append(blocked_entry("llms", llms_blocked))
+        elif blocked is None and facts.llms is not None:
+            facts.site_checks.content_ran.append("llms")
 
     # 4-5. Render check and structured data.
-    if usable:
+    if usable and blocked is None:
         b = business or {}
         facts.render = check_render(parsed, html, names=facts_names(business), phone=b.get("phone"),
                                     address=b.get("address"))
         facts.schema = analyse(parsed.jsonld_raw, facts.business_names)
+        facts.site_checks.content_ran += ["render", "structured_data"]
 
     # 6-7. Rules decide; findings explain.
     verdict = decide(facts)
@@ -164,7 +188,8 @@ def _run(url, business, conn, checkpoint, fetcher, clients_root, explain_client,
         try:
             ai_text = explain.explain_verdict(
                 business_id=business["id"], url=url, verdict=verdict.verdict, reason=verdict.reason,
-                findings=findings, client=explain_client)
+                findings=findings, not_checked=(facts.site_checks.not_checked if facts.site_checks else []),
+                client=explain_client)
         except Exception as exc:  # noqa: BLE001 - a failed explanation must not lose the diagnosis
             warnings.append(f"The model-written summary failed ({exc}); the report has the findings without it.")
 
@@ -229,18 +254,31 @@ def _run(url, business, conn, checkpoint, fetcher, clients_root, explain_client,
                             run_number=run_number)
 
 
-def run_site_checks(fetcher: Fetcher, facts: Facts, final_url: str, old_urls, warnings: list[str]) -> SiteChecks:
-    """The step 25 checks, on the address the diagnosis ended at. A failure to connect is a result, not an error."""
+def run_site_checks(fetcher: Fetcher, facts: Facts, final_url: str, old_urls, warnings: list[str],
+                    blocked: str | None = None) -> SiteChecks:
+    """The step 25 checks, on the address the diagnosis ended at. A failure to connect is a result, not an error.
+
+    When we were blocked, no request is made at all: every check is recorded as not checked. A check whose own requests
+    come back as a bot check is also dropped (not just left without findings), so its absence means "not checked"."""
     parts = urlsplit(final_url)
     origin = f"{parts.scheme}://{parts.netloc}"
     interval = min(fetcher.min_interval, SITE_CHECK_INTERVAL)
     checks = SiteChecks()
+    if blocked is not None:
+        wanted = ("sitemap", "hosts") + (("old_urls",) if old_urls is not None else ())
+        checks.not_checked += [blocked_entry(c, blocked) for c in wanted]
+        return checks
     robots = facts.robots
     robots_ok = robots is not None and robots.outcome in ("ok", "missing")
     quick = fetcher.sibling(max_requests=SITE_CHECK_REQUESTS, min_interval=interval)
     checks.sitemap = check_sitemap(quick, origin, robots.raw if robots_ok else None, robots_ok)
     checks.hosts = check_hosts(quick, parts.hostname or "")
     checks.requests_made = quick.requests_made
+    for name in ("sitemap", "hosts"):
+        why = getattr(getattr(checks, name), "blocked", None)
+        if why:
+            checks.not_checked.append(blocked_entry(name, why))
+            setattr(checks, name, None)
     if old_urls is not None:
         try:
             urls, info = load_old_urls(old_urls, origin)

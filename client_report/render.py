@@ -14,6 +14,7 @@ from client_report import charts
 from compare.audit import DETECTION_FLOOR_POINTS
 from client_report.strings import t
 from client_report.words import Words
+from diagnose.display import group_findings
 
 CSS = """
 :root{--ink:#1b1b1b;--mid:#555;--rule:#c9c9c9;--soft:#f3f3f3;--paper:#fff}
@@ -110,8 +111,14 @@ def _finding_text(c: Ctx, f: dict, platform: str | None) -> str:
 def _findings_table(c: Ctx, findings: list[dict], platform: str | None) -> str:
     if not findings:
         return f"<p>{E(c.t('health.no_findings'))}</p>"
-    return table([c.t("health.col.severity"), c.t("health.col.what")],
-                 [[E(c.t(f"severity.{f['severity']}")), E(_finding_text(c, f, platform))] for f in findings])
+    # One row per kind of finding. The same sentence for the same code is shown once, with how many times it was found.
+    rows = []
+    for g in group_findings(findings):
+        text = _finding_text(c, g["findings"][0], platform)
+        if g["count"] > 1:
+            text += " " + c.t("health.repeated", n=g["count"])
+        rows.append([E(c.t(f"severity.{g['severity']}")), E(text)])
+    return table([c.t("health.col.severity"), c.t("health.col.what")], rows)
 
 
 def _health_comparison(c: Ctx, d: dict) -> str:

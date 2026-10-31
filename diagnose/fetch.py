@@ -86,6 +86,11 @@ class Fetcher:
                        min_interval=self.min_interval if min_interval is None else min_interval,
                        sleep=self._sleep, clock=self._clock)
 
+    def pause(self, seconds: float) -> None:
+        """Waits (through the injectable sleep, so tests never really wait) and restarts the spacing clock."""
+        self._sleep(seconds)
+        self._last_request_at = self._clock()
+
     def get(self, url: str, user_agent: str, *, follow_redirects: bool | None = None) -> FetchResult:
         """follow_redirects=None uses the client's setting (follow, at most MAX_REDIRECT_HOPS). False returns the
         first response as it is, so a 301 or 302 can be seen."""

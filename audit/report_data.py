@@ -19,7 +19,8 @@ from uuid import UUID
 
 from audit import store
 from audit.fill_in import ENGINE_LABELS
-from dossier.questions import brand_terms, classify, length_of
+from core.question_length import length_for
+from dossier.questions import brand_terms, classify
 from scoring import bootstrap, scoring
 
 # The before/after design of PLAN.md section 8: 32 frozen questions x 2 engines x 3 runs. Anything else is a snapshot.
@@ -179,12 +180,12 @@ def question_types(planned: list[dict] | None, texts: list[str], business: dict)
             kind, how = q["type"], q.get("type_source") or "tag"
         else:
             kind, how = classify(q["text"], None, terms)
-        out[q["text"]] = {"type": kind, "type_source": how, "length": q.get("length") or length_of(q["text"]),
-                          "language": q.get("language")}
+        out[q["text"]] = {"type": kind, "type_source": how, "length": length_for(q["text"], q.get("length"))[0],
+                          "language": q.get("language"), "control": bool(q.get("control"))}
     for t in texts:
         if t not in out:
             kind, how = classify(t, None, terms)
-            out[t] = {"type": kind, "type_source": how, "length": length_of(t), "language": None}
+            out[t] = {"type": kind, "type_source": how, "length": length_for(t)[0], "language": None, "control": False}
     return out
 
 
@@ -353,6 +354,22 @@ def _share_of_voice(scored: list[dict]) -> dict:
                             "client_named_in": sum(r["answers"] for r in client_rows)}}
 
 
+CONTROL_EXCERPT_CHARS = 300
+
+
+def _controls_section(controls: list[dict], number: dict, order: Callable[[dict], tuple]) -> dict:
+    """What the engines answered to the control questions. No score of any kind: this only shows the answers, so a
+    person can see whether an engine's behaviour drifted for reasons that have nothing to do with the client."""
+    rows = []
+    for a in sorted(controls, key=order):
+        text = " ".join((a["text"] or "").split())
+        rows.append({"number": number[a["question"]], "question": a["question"], "engine": a["engine"],
+                     "label": engine_label(a["engine"]), "repeat": a["repeat"], "searched": a["searched"],
+                     "businesses_named": [b["name"] for b in a["named"]] if a["named"] is not None else None,
+                     "excerpt": text[:CONTROL_EXCERPT_CHARS] + ("…" if len(text) > CONTROL_EXCERPT_CHARS else "")})
+    return {"questions": len({r["question"] for r in rows}), "answers": rows}
+
+
 def _wrong_facts(scored: list[dict], order: Callable[[dict], tuple], facts: list[dict]) -> dict:
     by_label = {f["field"].casefold(): f["value"] for f in facts}
     incorrect, totals = [], Counter()
@@ -437,8 +454,12 @@ def build_report(conn, business: dict, run: dict, *, partial: bool) -> dict:
     types = question_types(planned, [q["text"] for q in questions], business)
     for q in questions:
         q.update(types[q["text"]])
-    discovery = [a for a in scored if types[a["question"]]["type"] == "discovery"]
-    brand = [a for a in scored if types[a["question"]]["type"] == "brand"]
+    # A control question (an unrelated topic, asked to notice drift) is never scored: not in visibility, recommendation,
+    # gap, share of voice or accuracy. It has its own section, which only shows what the engines answered.
+    main = [a for a in scored if not types[a["question"]]["control"]]
+    controls = [a for a in answers if types[a["question"]]["control"]]       # all of them, read by the model or not
+    discovery = [a for a in main if types[a["question"]]["type"] == "discovery"]
+    brand = [a for a in main if types[a["question"]]["type"] == "brand"]
     if not discovery:
         raise ReportError(
             "none of this run's questions is a discovery question (one that does not name the client), so there is "
@@ -483,11 +504,13 @@ def build_report(conn, business: dict, run: dict, *, partial: bool) -> dict:
                                   for a in sorted((a for a in answers if a["named"] is None), key=order)]},
         "tags_recorded": tags_recorded,
         # Visibility, recommendation, gap and the rest are measured on discovery questions only (PLAN.md section 8).
-        "question_mix": {"discovery_questions": sum(1 for q in questions if q["type"] == "discovery"),
+        "question_mix": {"discovery_questions": sum(1 for q in questions if q["type"] == "discovery" and not q["control"]),
+                         "control_questions": sum(1 for q in questions if q["control"]),
+                         "control_answers": len(controls),
                          "brand_questions": sum(1 for q in questions if q["type"] == "brand"),
                          "discovery_answers": len(discovery), "brand_answers": len(brand),
                          "types_derived_from_text": derived_types},
-        "headline": _headline_block(discovery, scored, brand, with_accuracy=with_accuracy),
+        "headline": _headline_block(discovery, main, brand, with_accuracy=with_accuracy),
         "brand": _brand_section(brand),
     }
 
@@ -522,10 +545,12 @@ def build_report(conn, business: dict, run: dict, *, partial: bool) -> dict:
     data["share_of_voice"] = {k: sov[k] for k in ("businesses_named", "rows", "client_outside_top", "others")}
     data["reasons"] = sov["reasons"]
     data["descriptors"] = _share_of_voice(brand)["descriptors"]
-    data["wrong_facts"] = _wrong_facts(scored, order, facts)
-    data["sources"] = _sources([a for a in answers if types[a["question"]]["type"] == "discovery"], business["domain"])
+    data["wrong_facts"] = _wrong_facts(main, order, facts)
+    data["sources"] = _sources([a for a in answers if types[a["question"]]["type"] == "discovery" and not types[a["question"]]["control"]],
+                               business["domain"])
+    data["controls"] = _controls_section(controls, number, order)
     data["appendix"] = [
-        {"number": q["number"], "question": q["text"], "is_target": q["is_target"], "type": q["type"],
+        {"number": q["number"], "question": q["text"], "is_target": q["is_target"], "type": q["type"], "control": q["control"],
          "type_source": q["type_source"], "length": q["length"], "language": q["language"], "answers": [
             {"engine": a["engine"], "label": engine_label(a["engine"]), "repeat": a["repeat"], "mode": a["mode"],
              "searched": a["searched"], "logged_in": a["logged_in"], "location": a["location"],

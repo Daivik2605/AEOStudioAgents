@@ -63,8 +63,14 @@ SOFT_BLOCK_RATIO = 0.5       # bot body under half the browser body = soft block
 # Verdicts that mean "the bot was NOT given the page".
 FAILING = {
     "challenged", "ua_blocked", "waf_blocked", "payment_required", "rate_limited",
-    "not_found_for_bot", "server_error", "soft_block", "connection_error", "http_error",
+    "not_found_for_bot", "server_error", "soft_block", "http_error",
 }
+
+# We could not even connect as this bot, twice, 5 seconds apart. That is not a refusal (a refusal is an answer: 403, 429, a
+# challenge page). It may be our network or a moment's trouble, so it is reported as unconfirmed and is never, by itself,
+# a reason for a conditional verdict (step 25c).
+UNCONFIRMED = {"connection_unconfirmed"}
+CONNECT_RETRY_SECONDS = 5
 
 
 def challenge_reason(result: FetchResult) -> str | None:
@@ -82,6 +88,17 @@ def challenge_reason(result: FetchResult) -> str | None:
             if result.status != 200 or words < THIN_WORDS:
                 return f"challenge page text ('{marker}')"
     return None
+
+
+BLOCK_STATUSES = (403, 429, 503)
+
+
+def looks_like_bot_check(result: FetchResult) -> str | None:
+    """Why this response looks like a bot check rather than the site (a refusal status, or a challenge page), or None.
+    Used to stop us claiming things about a page we were not allowed to read. We only DETECT; we never get past one."""
+    if result.status in BLOCK_STATUSES:
+        return f"HTTP {result.status}"
+    return challenge_reason(result)
 
 
 def _control_state(control: FetchResult) -> str:
@@ -109,7 +126,7 @@ def classify(bot_result: FetchResult, control: FetchResult) -> tuple[str, str]:
         return "inconclusive", f"the browser control was {state}, so the comparison means nothing"
 
     if bot_result.error:
-        return "connection_error", bot_result.error
+        return "connection_unconfirmed", bot_result.error
     status = bot_result.status
     reason = challenge_reason(bot_result)
     if reason:
@@ -174,7 +191,13 @@ def run_crawler_test(fetcher: Fetcher, url: str) -> CrawlerTest:
                            stopped_early="the browser control got no answer, so the bots were not tried")
     for bot in BOTS:
         try:
-            results[bot.name] = fetcher.get(url, bot.user_agent)
+            got = fetcher.get(url, bot.user_agent)
+            if got.status is None and got.error:
+                # No answer at all. Ask once more after a pause, in case it was a moment's trouble. An answer of any
+                # kind (even 403) is never retried: that is the site's reply, and we never try to get past it.
+                fetcher.pause(CONNECT_RETRY_SECONDS)
+                got = fetcher.get(url, bot.user_agent)
+            results[bot.name] = got
         except RequestBudgetExceeded as exc:
             stopped = str(exc)
             break

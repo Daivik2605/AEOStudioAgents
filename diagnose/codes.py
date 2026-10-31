@@ -36,6 +36,7 @@ REGISTRY: dict[str, str] = {
     "CRAWLER_BLOCKED_GPTBOT": "low",          # training bot; blocking it is often deliberate
     "CRAWLER_BLOCKED_CLAUDEBOT": "low",       # training bot; blocking it is often deliberate
     "CRAWLER_TEST_INCONCLUSIVE": "medium",    # the browser control failed too: our network, not an AI block
+    "CRAWLER_CONNECT_UNCONFIRMED": "low",     # could not connect as a bot, twice: unconfirmed, maybe temporary (step 25c)
     # ---- robots.txt ---------------------------------------------------------
     "ROBOTS_TXT_BOT_FETCH_FAILED": "high",    # bot got 5xx/challenge, browser did not: RFC 9309 total disallow
     "ROBOTS_TXT_UNREACHABLE": "medium",       # robots.txt failed for the browser too
@@ -125,6 +126,36 @@ CHECK_FOR_CODE: dict[str, str] = {
     "OLD_URL_404": "old_urls", "OLD_URL_NOT_PERMANENT": "old_urls", "OLD_URL_CHAIN": "old_urls", "OLD_URL_TO_HOME": "old_urls",
 }
 
+# ---- "not checked" (step 25c) ----------------------------------------------------------------------------------------
+# Every check that reads the site, by the name `checks_ran` uses. A finding is only trustworthy if the check behind it ran
+# and was not blocked; the step 25 codes are in CHECK_FOR_CODE above, the older content codes are matched by their prefix.
+CHECK_LABELS: dict[str, str] = {
+    "render": "Page content (headings, words in the page, name and phone)",
+    "structured_data": "Structured data (JSON-LD)",
+    "llms": "The /llms.txt file",
+    "sitemap": "Sitemap",
+    "hosts": "www / non-www and http / https addresses",
+    "old_urls": "Old addresses",
+}
+
+
+def check_for(code: str) -> str | None:
+    """The name of the check whose result a finding code depends on, or None if it depends on no check that can be skipped."""
+    if code in CHECK_FOR_CODE:
+        return CHECK_FOR_CODE[code]
+    if code.startswith("RENDER_"):
+        return "render"
+    if code.startswith("SCHEMA_"):
+        return "structured_data"
+    if code == "LLMS_TXT_MISSING":
+        return "llms"
+    return None
+
+
+def codes_for_check(check: str) -> list[str]:
+    return sorted(c for c in REGISTRY if check_for(c) == check)
+
+
 # Plain-language explanation of each step 25 code: what it is, and why it matters for AI visibility. The finding's own
 # `what` states the facts of one site; this says what the code means. Shown in the diagnosis report.
 EXPLANATIONS: dict[str, str] = {
@@ -159,6 +190,20 @@ EXPLANATIONS: dict[str, str] = {
                        "looks like the old page was removed, so what it was known for is lost.",
 }
 
+# Explanations for codes added after step 25 (step 25c). Kept apart from EXPLANATIONS, which is exactly the step 25 codes.
+MORE_EXPLANATIONS: dict[str, str] = {
+    "CRAWLER_CONNECT_UNCONFIRMED": "Our test could not connect to the site as this AI crawler, on two tries five seconds apart. "
+                                   "That is not the site refusing the crawler (a refusal is an answer, such as 403 or a challenge "
+                                   "page). It may be our own network or a moment's trouble at the site, so it is shown as "
+                                   "unconfirmed and does not change the verdict. Run the check again to confirm it.",
+}
+
+
+def explanation_for(code: str) -> str | None:
+    """The plain-language 'why it matters' for a code, when it has one."""
+    return EXPLANATIONS.get(code) or MORE_EXPLANATIONS.get(code)
+
+
 # Codes that inspect the content of JSON-LD (every SCHEMA_ code except the one that says there is none).
 # A test fails if one of these is missing from DEPENDS_ON.
 JSONLD_CONTENT_CODES = tuple(c for c in REGISTRY if c.startswith("SCHEMA_") and c != "SCHEMA_NONE_FOUND")
@@ -180,6 +225,7 @@ def make_finding(
     where_to_fix: str,
     source: str,
     severity: str | None = None,
+    unconfirmed: bool = False,
 ) -> dict[str, Any]:
     """Builds one finding in the exact shape PLAN.md section 3.4 shows.
 
@@ -191,7 +237,7 @@ def make_finding(
     severity = severity or REGISTRY[code]
     if severity not in SEVERITIES:
         raise ValueError(f"unknown severity '{severity}'")
-    return {
+    finding = {
         "code": code,
         "severity": severity,
         "what": what,
@@ -200,3 +246,6 @@ def make_finding(
         "where_to_fix": where_to_fix,
         "source": source,
     }
+    if unconfirmed:      # only added when true, so every other finding keeps exactly the shape it always had
+        finding["unconfirmed"] = True
+    return finding

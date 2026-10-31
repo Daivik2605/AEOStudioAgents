@@ -20,14 +20,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from diagnose import platform_data as pd
-from diagnose.crawler import BOTS, FAILING
+from diagnose.crawler import BOTS, FAILING, UNCONFIRMED
 from diagnose.facts import Facts
 
 # A training bot refused with a plain "no" is usually the owner's choice and does
 # not stop AI search. These failures are NOT deliberate-looking, so they count
 # even for training bots.
-NEVER_DELIBERATE = {"challenged", "rate_limited", "server_error", "connection_error",
-                     "soft_block", "not_found_for_bot"}
+NEVER_DELIBERATE = {"challenged", "rate_limited", "server_error", "soft_block", "not_found_for_bot"}
 
 
 @dataclass
@@ -59,6 +58,13 @@ def blocking_bots(facts: Facts) -> list[tuple[str, str, str]]:
     return out
 
 
+def unconfirmed_bots(facts: Facts) -> list[str]:
+    """Bots we could not connect as, even after one retry. Reported, but never a reason for a conditional verdict."""
+    if not facts.crawler:
+        return []
+    return [name for name, (verdict, _) in facts.crawler.verdicts.items() if verdict in UNCONFIRMED]
+
+
 def crawl_inconclusive(facts: Facts) -> bool:
     if not facts.site_reachable:
         return True
@@ -86,6 +92,9 @@ def spa_conditional(facts: Facts) -> bool:
         and r.verdict != "fine"
     )
     return r.verdict == "content_missing" or bool(facts_missing)
+
+
+_UNCONFIRMED_NOTE = " Not confirmed: we could not connect as {bots}, which may be temporary. Re-run to confirm."
 
 
 def _reason_text(r: Reason) -> str:
@@ -166,7 +175,11 @@ def decide(facts: Facts) -> Verdict:
     if platform:
         label = pd.PLATFORM_LABELS.get(platform, platform)
         text = f"{label} can carry the work and AI crawlers reach the page. (Source: {pd.DELIVERY_SOURCE})"
+        if unconfirmed_bots(facts):
+            text += _UNCONFIRMED_NOTE.format(bots=", ".join(unconfirmed_bots(facts)))
     else:
         text = ("No known platform recognised, and AI crawlers reach a page that has its content in the HTML. "
                 "Treated as a custom site that server-renders. (Source: PLAN.md §5, Serve)")
+        if unconfirmed_bots(facts):
+            text += _UNCONFIRMED_NOTE.format(bots=", ".join(unconfirmed_bots(facts)))
     return Verdict("serve", text, [])

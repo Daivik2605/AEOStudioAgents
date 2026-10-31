@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from diagnose import platform_data as pd
 from diagnose.codes import SEVERITIES, make_finding
-from diagnose.crawler import BOTS, FAILING
+from diagnose.crawler import BOTS, FAILING, UNCONFIRMED
 from diagnose.facts import Facts
 from diagnose.rules import NEVER_DELIBERATE, crawl_inconclusive
 from diagnose.site_checks import EXAMPLES_SHOWN, OLD_URL_CODES, example_line
@@ -78,6 +78,14 @@ def build_findings(facts: Facts) -> list[dict]:
         # change the verdict (see rules.blocking_bots); a training bot refused with a plain
         # "no" is recorded as low, because that is often the owner's choice.
         for name, (verdict, detail) in facts.crawler.verdicts.items():
+            if verdict in UNCONFIRMED:
+                out.append(make_finding(
+                    "CRAWLER_CONNECT_UNCONFIRMED", unconfirmed=True,
+                    what=f"Could not connect as {name}; may be temporary; re-run to confirm",
+                    evidence=_short(f"two tries, 5 seconds apart: {detail}"), fixable_on_platform=None,
+                    where_to_fix="Run `aeo diagnose` again. If it still cannot connect, check from another network.",
+                    source=f"{_PD} §7"))
+                continue
             if verdict not in FAILING:
                 continue
             bot = next(b for b in BOTS if b.name == name)

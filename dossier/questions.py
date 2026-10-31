@@ -16,8 +16,9 @@ from pathlib import Path
 
 import yaml
 
+from core.question_length import LENGTHS, length_for, length_of  # noqa: F401  (the one rule; re-exported for callers that already import it from here)
+
 TYPES = ("discovery", "brand")
-LENGTHS = ("short", "medium", "long")
 QUESTION_DIR = Path(__file__).parent.parent / "question_sets"
 
 
@@ -33,17 +34,6 @@ def normalise(text: str) -> str:
 
 def compact(text: str) -> str:
     return normalise(text).replace(" ", "")
-
-
-def length_of(text: str) -> str:
-    """short: 3-6 words (search-box style). long: two or more sentences, or a long run. Else medium (PLAN.md section 8)."""
-    words = len(text.split())
-    sentences = len([s for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s])
-    if words <= 6:
-        return "short"
-    if sentences >= 2 or words > 30:
-        return "long"
-    return "medium"
 
 
 def brand_terms(name: str | None, domain: str | None, alternates: list[str] | None = None) -> list[str]:
@@ -80,10 +70,9 @@ def read_questions(path: Path) -> dict:
         if not isinstance(entry, dict) or not str(entry.get("text") or "").strip():
             raise DossierQuestionsError(f"{path.name}: every question needs text")
         text = str(entry["text"]).strip()
-        tag_length = entry.get("length")
+        length, length_from = length_for(text, entry.get("length"))
         items.append({"text": text, "type": entry.get("type"), "intent": entry.get("intent"),
-                      "length": tag_length if tag_length in LENGTHS else length_of(text),
-                      "length_from": "tag" if tag_length in LENGTHS else "word count",
+                      "length": length, "length_from": length_from,
                       "language": entry.get("language"), "is_target": bool(entry.get("is_target", False)),
                       # control: an informational question we deliberately do not work on. spot_check: part of the small
                       # set asked once on each engine at the start (the dossier's "What AI says today").

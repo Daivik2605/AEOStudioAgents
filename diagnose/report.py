@@ -17,8 +17,9 @@ from core import client_files
 from core.client_files import slugify_domain  # noqa: F401 - re-exported: callers import it from here
 from diagnose import RULES_VERSION
 from diagnose import platform_data as pd
-from diagnose.codes import EXPLANATIONS, SEVERITIES
+from diagnose.codes import SEVERITIES, explanation_for
 from diagnose.crawler import BOTS
+from diagnose.display import group_findings
 from diagnose.facts import Facts
 from diagnose.rules import Verdict
 
@@ -134,6 +135,7 @@ def build_markdown(data: dict) -> str:
     lines.append("")
 
     lines += site_checks_markdown(data.get("site_checks"))
+    lines += not_checked_markdown(data.get("site_checks"))
 
     c = data["crawler_access"]
     lines += ["## Can AI crawlers reach the page?", ""]
@@ -182,15 +184,20 @@ def build_markdown(data: dict) -> str:
 
     lines += ["## Findings", ""]
     if data["findings"]:
-        counts = {s: sum(1 for f in data["findings"] if f["severity"] == s) for s in SEVERITIES}
-        lines += [", ".join(f"{n} {s}" for s, n in counts.items() if n), ""]
-        for f in data["findings"]:
+        grouped = group_findings(data["findings"])      # one entry per code; the stored findings are not changed
+        counts = {s: sum(1 for g in grouped if g["severity"] == s) for s in SEVERITIES}
+        repeats = len(data["findings"]) - len(grouped)
+        lines += [", ".join(f"{n} {s}" for s, n in counts.items() if n)
+                  + (f" ({len(data['findings'])} counting repeats)" if repeats else ""), ""]
+        for g in grouped:
+            f = g["findings"][0]
             fix = {True: "yes", False: "no", None: "unknown"}[f["fixable_on_platform"]]
-            lines += [f"### `{f['code']}` — {f['severity']}", "", f["what"], ""]
-            if f["code"] in EXPLANATIONS:
-                lines += [f"Why it matters: {EXPLANATIONS[f['code']]}", ""]
-            lines += [f"- Evidence: {f['evidence']}", f"- Fixable on this platform: {fix}",
-                      f"- Where to fix: {f['where_to_fix']}", f"- Source: {f['source']}", ""]
+            lines += [f"### `{g['code']}` — {g['severity']}" + (" — unconfirmed" if g["unconfirmed"] else ""), "", g["what"], ""]
+            lines += [f"- Example: {e}" for e in g["examples"]] + ([""] if g["examples"] else [])
+            if explanation_for(f["code"]):
+                lines += [f"Why it matters: {explanation_for(f['code'])}", ""]
+            lines += ([] if g["examples"] else [f"- Evidence: {f['evidence']}"]) + [
+                      f"- Fixable on this platform: {fix}", f"- Where to fix: {f['where_to_fix']}", f"- Source: {f['source']}", ""]
     else:
         lines += ["No findings.", ""]
 
@@ -235,6 +242,19 @@ def site_checks_markdown(sc: dict | None) -> list[str]:
                                          f"no answer ({ht['error']})"))
     if o:
         lines.append(f"- Old addresses: {o['checked']} checked; " + ", ".join(f"{n} {c.lower().replace('_', ' ')}" for c, n in o["counts"].items()))
+    lines.append("")
+    return lines
+
+
+def not_checked_markdown(sc: dict | None) -> list[str]:
+    """What we did NOT check and why. Findings that depend on these are never raised, so their absence means 'unknown'."""
+    items = (sc or {}).get("not_checked") or []
+    if not items:
+        return []
+    lines = ["## Not checked", "",
+             "These could not be checked, so no finding about them is raised. Their absence below means unknown, not fine.", ""]
+    for n in items:
+        lines.append(f"- **{n['label']}**: {n['reason']}.")
     lines.append("")
     return lines
 

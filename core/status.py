@@ -28,6 +28,10 @@ REASON_REQUIRED = ("declined", "rejected")
 
 ACTOR = "aeo status"
 
+# Businesses made by the test suite: `core-test-` and 32 hex digits, nothing else. Twelve of them were written into the dev
+# database on 28 Sep 2026, before the tests were kept off it. `aeo status --all` hides them unless asked, and never deletes them.
+TEST_DOMAIN_PATTERN = r"^core-test-[0-9a-f]{32}\.example$"
+
 
 class StatusError(Exception):
     """The change cannot be made. The message says what to do."""
@@ -124,17 +128,29 @@ def get_status(conn: psycopg.Connection, business_id: str) -> dict:
             "history": history}
 
 
-def list_statuses(conn: psycopg.Connection, status: str | None = None) -> list[dict]:
-    """Every business: domain, status, engagement type and when the status last changed."""
+def hidden_test_businesses(conn: psycopg.Connection, status: str | None = None) -> int:
+    """How many test businesses `list_statuses` leaves out (with the same status filter)."""
+    sql, args = "SELECT count(*) FROM businesses WHERE domain ~ %s", [TEST_DOMAIN_PATTERN]
+    if status:
+        sql, args = sql + " AND status = %s", args + [status]
+    return conn.execute(sql, args).fetchone()[0]
+
+
+def list_statuses(conn: psycopg.Connection, status: str | None = None, *, include_test: bool = False) -> list[dict]:
+    """Every business: domain, status, engagement type and when the status last changed.
+    Test businesses (core-test-<32 hex>.example) are left out unless `include_test`."""
     if status is not None and status not in STATUSES:
         raise StatusError(f"'{status}' is not a status. Use one of: {', '.join(STATUSES)}.")
     sql = ("SELECT b.domain, b.status, b.engagement_type, "
            "COALESCE((SELECT h.set_at FROM status_history h WHERE h.business_id = b.id ORDER BY h.seq DESC LIMIT 1), "
            "b.created_at) FROM businesses b")
-    args: list = []
+    conditions, args = [], []
     if status:
-        sql += " WHERE b.status = %s"
+        conditions.append("b.status = %s")
         args.append(status)
+    if not include_test:
+        conditions.append("b.domain !~ %s")
+        args.append(TEST_DOMAIN_PATTERN)
     with conn.cursor() as cur:
-        cur.execute(sql + " ORDER BY b.domain", args)
+        cur.execute(sql + (" WHERE " + " AND ".join(conditions) if conditions else "") + " ORDER BY b.domain", args)
         return [{"domain": d, "status": s, "engagement_type": e, "last_changed": at} for d, s, e, at in cur.fetchall()]

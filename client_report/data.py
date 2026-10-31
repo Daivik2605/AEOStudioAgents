@@ -138,7 +138,9 @@ def _audit_today(conn, business: dict) -> dict:
             k: data["header"][k] for k in ("run_id", "checkpoint", "question_set_version", "first_answer_on",
                                            "last_answer_on", "profile_version", "confirmed_facts")},
         "engines": [e["label"] for e in data["header"]["engines"]],
-        "extraction": {"answers": data["extraction"]["answers"], "scored": data["extraction"]["scored"],
+        "extraction": {"answers": data["extraction"]["answers"],
+                       # the answers that stand behind the figures: control answers are in none of them
+                       "scored": data["question_mix"]["discovery_answers"] + data["question_mix"]["brand_answers"],
                        "failed": len(data["extraction"]["failed"])},
         "headline": data["headline"], "targets_vs_control": data["targets_vs_control"],
         "share_of_voice": data["share_of_voice"], "wrong_facts": data["wrong_facts"],

@@ -26,7 +26,9 @@ from core.evidence import list_evidence
 from core.profiles import CONFIRMED, latest_profile
 from core.timeline import collect_work
 from diagnose.codes import CHECK_FOR_CODE
+from diagnose.not_checked import content_checks_ran, site_checks_ran
 from diagnose.crawler import BOTS
+from diagnose.display import group_findings
 from diagnose.html_utils import parse_page
 from diagnose.structured_data import ORG_TYPES, _types, _walk
 from dossier import notes as notes_mod
@@ -99,8 +101,8 @@ def load(conn, business: dict) -> dict:
         diagnoses = [{"id": str(r[0]), "checkpoint": r[1], "checked_at": r[2], "platform": r[3], "plan": r[4], "verdict": r[5],
                       "findings": r[6] or [], "render": r[7], "crawler": r[8] or {}, "jsonld": r[9] or [], "url": r[10],
                       "cdn": r[11], "host": r[12], "framework": r[13], "site_checks": r[14],
-                      # Which step 25 checks this diagnosis ran; one made before step 25 ran none of them.
-                      "checks_ran": list((r[14] or {}).get("checks_ran", []))}
+                      # Which checks this diagnosis ran (see compare/diagnosis.py); "not_checked" says which it could not.
+                      "checks_ran": site_checks_ran(r[14]), "content_ran": content_checks_ran(r[14]), "not_checked": (r[14] or {}).get("not_checked") or []}
                      for r in cur.fetchall()]
         cur.execute("SELECT id, checkpoint, run_type, status, COALESCE(completed_at, created_at) FROM probe_runs "
                     "WHERE business_id = %s ORDER BY COALESCE(completed_at, created_at), id", (bid,))
@@ -236,6 +238,8 @@ def diagnosis_column(d: dict) -> dict:
             reasons.append(f"blocked: {bots.get(bot.name, {}).get('verdict', 'not given the page')}")
         if f"ROBOTS_DISALLOWS_{bot.code_suffix}" in codes:
             reasons.append("robots.txt disallows it")
+        if bots.get(bot.name, {}).get("verdict") == "connection_unconfirmed":
+            reasons.append("could not connect (unconfirmed, may be temporary)")
         rows[label] = "; ".join(reasons) if reasons else "allowed"
     r = d["render"]
     rows["Readable words (no JavaScript)"] = str(r["word_count"]) if r else "not tested"
@@ -402,7 +406,7 @@ def sec_how_ai_sees(ctx: dict) -> dict:
                 "blocks": [p("Not collected yet. Run `aeo diagnose <url> --business <b> --checkpoint before`.")]}
     web_dev = ctx["engagement"]["engagement_type"] in WEB_DEV
     views = [{"label": d["checkpoint"] or "no label", "date": _day(d["checked_at"]), "platform": d["platform"], "verdict": d["verdict"],
-              "findings": len(d["findings"]), "rows": diagnosis_column(d)} for d in cols]
+              "findings": len(group_findings(d["findings"])), "rows": diagnosis_column(d)} for d in cols]
     for v in views:
         v["name"] = column_name(v["label"], v["date"], web_dev)
     row_names = list(views[0]["rows"])
@@ -456,10 +460,10 @@ def sec_crawler(ctx: dict) -> dict:
 
 def sec_ai_says(ctx: dict, conn, spot: dict | None, proposed: dict | None, terms: list[str], question_dir: Path | None,
                 spot_set: dict | None) -> dict:
-    wanted = {i["text"] for i in spot_set["items"]} if spot_set else None        # None: no spot-check set was named
+    wanted = {i["text"] for i in spot_set["items"] if not i.get("control")} if spot_set else None        # None: no spot-check set was named. A control is never part of it.
     if spot is None:
         source = spot_set["items"] if spot_set else (proposed["items"] if proposed else [])
-        listed = [i["text"] for i in source]
+        listed = [i["text"] for i in source if not i.get("control")]
         other = [r for r in ctx["runs"] if r["status"] == "complete"]
         extra = " A full before/after measurement exists, but it is not a spot check." if other else ""
         blocks = [p("Not run yet." + extra), h("Questions that would be asked")]
@@ -533,8 +537,9 @@ def sec_problems(ctx: dict, conn) -> dict:
     items: list[dict] = []
     if ctx["diagnoses"]:
         latest = ctx["diagnoses"][-1]
-        for f in latest["findings"]:
-            items.append({"kind": finding_kind(f["code"]), "severity": f["severity"], "text": f["what"], "source": f"diagnosis {_day(latest['checked_at'])}: {f['code']}", "order": 0})
+        for g in group_findings(latest["findings"]):          # one line per kind of finding, with a count and up to 3 examples
+            text = g["what"] + (" (e.g. " + "; ".join(g["examples"]) + ")" if g["examples"] else "") + (" [unconfirmed]" if g["unconfirmed"] else "")
+            items.append({"kind": finding_kind(g["code"]), "severity": g["severity"], "text": text, "source": f"diagnosis {_day(latest['checked_at'])}: {g['code']}", "order": 0})
     seen = set()
     for run in ctx["runs"]:
         if run["status"] != "complete":
