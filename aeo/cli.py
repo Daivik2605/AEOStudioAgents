@@ -21,7 +21,7 @@ from compare.run import CompareError, make_comparison
 from recommend.run import RecommendError, make_recommendations
 from recommend.robots_file import TRAINING_MODES
 from audit.summary import summary_lines
-from core import client_files, evidence as ev, files_migrate, status as st, timeline as tl
+from core import client_files, evidence as ev, files_migrate, names as nm, status as st, timeline as tl
 from core.businesses import (ACCESS_LEVELS, ENGAGEMENT_TYPES, BusinessError, add_with_checks, get_engagement,
                              resolve_business, set_engagement)
 from core.checkpoints import CHECKPOINTS, CheckpointError, check_checkpoint
@@ -509,6 +509,47 @@ def engagement(
     typer.echo(f"{b['name'] or b['domain']}: type {result['engagement_type'] or 'not set'}, "
                f"access {result['access_level'] or 'not set'}"
                + ("" if result["changed"] else "  (already like this; nothing changed)"))
+
+
+@app.command("names")
+def names_cmd(
+    business: str = typer.Option(..., "--business", help="Business id, domain or name."),
+    canonical: Optional[str] = typer.Option(None, "--canonical", help="Set the name reports and most brand questions use."),
+    alias: Optional[list[str]] = typer.Option(None, "--alias", help="Another name the business is written under. Repeat for several."),
+    history: bool = typer.Option(False, "--history", help="Also list every name ever recorded, with who set it and when."),
+) -> None:
+    """Show, or set, the names a business is known by: one canonical name, any aliases, and the domain (always an alias).
+
+    With no --canonical or --alias, shows the current names. Nothing is overwritten or deleted: the earlier canonical
+    name stays in the history and is still recognised in AI answers."""
+    b = _find_business(business)
+    conn = get_connection()
+    try:
+        if canonical is None and not alias:
+            pass
+        else:
+            try:
+                done = nm.set_names(conn, b["id"], canonical=canonical, aliases=alias or [], operator=operator_name())
+            except BusinessError as exc:
+                _fail(str(exc))
+            if done["canonical"]["changed"]:
+                typer.echo(f"Canonical name: {done['canonical']['to']}  (was: {done['canonical']['from'] or 'not set'}; kept in the history)")
+            for a in done["aliases_added"]:
+                typer.echo(f"Alias added: {a}")
+            for a in done["aliases_already_known"]:
+                typer.echo(f"Already known, not added again: {a}")
+            if not done["canonical"]["changed"] and canonical is not None:
+                typer.echo(f"Canonical name is already {canonical}; nothing changed.")
+        ident = nm.get_identity(conn, b["id"])
+        rows = nm.history(conn, b["id"]) if history else []
+    finally:
+        conn.close()
+    typer.echo(f"Canonical name: {ident.canonical or 'not set'}")
+    typer.echo("Aliases: " + (", ".join(ident.aliases) if ident.aliases else "none") + f"; and the domain, {ident.domain}")
+    if ident.former:
+        typer.echo("Earlier canonical names (still recognised): " + ", ".join(ident.former))
+    for r in rows:
+        typer.echo(f"  {r['when']:%Y-%m-%d %H:%M}  {r['role']:<9} {r['name']}  ({r['set_by']})")
 
 
 evidence_app = typer.Typer(add_completion=False, no_args_is_help=True,

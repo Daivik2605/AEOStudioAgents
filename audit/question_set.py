@@ -191,7 +191,8 @@ def _parse_question(filename: str, entry) -> Question:
                     review_reason=reason.strip() if reason and reason.strip() else None, **flags)
 
 
-def resolve_tags(qs: QuestionSet, business_name: str | None, domain: str | None) -> tuple[list[dict], list[str]]:
+def resolve_tags(qs: QuestionSet, business_name: str | None, domain: str | None,
+                 alternates: list[str] | None = None) -> tuple[list[dict], list[str]]:
     """(every question with its tags settled, warnings). Needs the business, because 'discovery or brand' means
     'does the question name this business'. Raises QuestionSetError for a question that cannot be right.
 
@@ -202,7 +203,7 @@ def resolve_tags(qs: QuestionSet, business_name: str | None, domain: str | None)
     - Tagged brand but does not name the business: kept, with a warning. It cannot measure recognition.
     - No length tag: worked out from the word count.
     """
-    terms = brand_terms(business_name, domain)
+    terms = brand_terms(business_name, domain, alternates)      # the aliases too (step 25h)
     resolved, warnings = [], []
     for q in qs.items:
         found = contains_brand(q.text, terms)

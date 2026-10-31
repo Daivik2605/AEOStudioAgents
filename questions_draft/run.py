@@ -23,6 +23,7 @@ from typing import Any, Callable
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from audit.cost_gate import confirm_cost
+from core.names import names_in, other_names
 from core.llm import estimate_cost
 from audit.question_set import QuestionSetError, load_question_set, resolve_tags
 from core import client_files
@@ -156,7 +157,8 @@ def build_payload(business: dict, inputs: DraftInputs, targets: plan.Targets, la
                   place: loc.Place | None = None) -> dict:
     place = place or loc.Place()
     payload: dict[str, Any] = {
-        "business": {"name": business["name"], "domain": business["domain"], "url": business["website_url"]},
+        "business": {"name": business["name"], "aliases": list(business.get("aliases") or []),
+                     "domain": business["domain"], "url": business["website_url"]},
         "languages": languages, "operator_note": note or None,
         "location": place.location, "location_source": place.source or None, "other_places_on_the_site": place.known,
         "facts_source": inputs.facts_source, "facts": inputs.facts,
@@ -337,13 +339,18 @@ def _draft_questions(conn, business: dict, *, progress: dict, languages: list[st
                  confirmed_fact_ids=inputs.confirmed_ids, place_rule=place_rule)
     kept, rejected = plan.check_questions(first, already=[], **check)
     fitted, surplus, missing = plan.fit_to_targets(kept, targets)
+    aliases = list(business.get("aliases") or [])
+    fitted, surplus, alias_unused = plan.cover_aliases(fitted, surplus, name, aliases)       # a spare question may already do it
 
-    if rejected or missing:
-        say(f"{len(rejected)} question(s) were dropped and {sum(missing.values())} are missing: asking once more.")
+    if rejected or missing or alias_unused:
+        say(f"{len(rejected)} question(s) were dropped and {sum(missing.values())} are missing"
+            + (f"; {len(alias_unused)} other name(s) of the business are in no brand question" if alias_unused else "")
+            + ": asking once more.")
         try:
             second = propose({"accepted": [c.text for c in fitted], "fact_topics_used": plan.topics_used(fitted),
                               "rejected": [{"text": r.text, "reasons": r.reasons} for r in rejected],
                               "needed": _still_needed(missing),
+                              **({"names_needed": alias_unused} if alias_unused else {}),
                               **({"cut_off": True} if cut_offs else {})})
         except (AgentOutputInvalid, DraftError):
             second = []
@@ -352,6 +359,7 @@ def _draft_questions(conn, business: dict, *, progress: dict, languages: list[st
         rejected += rejected_again
         fitted, extra_surplus, missing = plan.fit_to_targets([*fitted, *more], targets)
         surplus += extra_surplus
+        fitted, surplus, alias_unused = plan.cover_aliases(fitted, surplus, name, aliases)
 
     # One top-up for a length that is far under its target; it asks for that length only.
     topped_up = None
@@ -370,8 +378,14 @@ def _draft_questions(conn, business: dict, *, progress: dict, languages: list[st
         topped_up = request["length"]
         extras, rejected_topup = plan.check_questions(third, already=fitted, **check)
         rejected += rejected_topup
-        fitted, left_out = plan.merge_topup(fitted, extras, targets, request["length"])
+        everything = [n for n in [name, *aliases] if n]
+        fitted, left_out = plan.merge_topup(fitted, extras, targets, request["length"],
+                                            protect=lambda c: bool(set(names_in(c.text, everything)) & set(aliases)))
         surplus += left_out
+
+    for alias in plan.alias_gap(fitted, name, aliases):
+        warnings.append(f"The name \"{alias}\" is in no brand question, although the business is also written that way. "
+                        "Not padded: reword one brand question by hand if you want it covered.")
 
     for call_no, kept_n in cut_offs:
         asked_again = MAX_CALLS - calls_left() > call_no
@@ -533,7 +547,7 @@ def _check_with_loader(text: str, version: int, business: dict) -> list[str]:
         probe.write_text(text, encoding="utf-8")
         try:
             qs = load_question_set(probe)
-            _, warnings = resolve_tags(qs, business["name"], business["domain"])
+            _, warnings = resolve_tags(qs, business["name"], business["domain"], other_names(business))
         except QuestionSetError as exc:
             raise DraftError(f"the draft did not pass the question-set checks, so it was not saved: {exc}") from exc
     return warnings

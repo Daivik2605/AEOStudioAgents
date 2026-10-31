@@ -19,6 +19,7 @@ from audit.manual import AuditError, run_manual_audit
 from audit.question_set import QuestionSetError, load_question_set
 from conftest import FakeAnthropicClient, text_response
 from core.businesses import BusinessError, add_business
+from core import names
 from core.db import get_connection
 
 Q1 = "who supplies water refill stations for events?"
@@ -95,7 +96,18 @@ def answer(*text_lines, retrieval="y", version="gpt-5-thinking", sources=()):
     return [*text_lines, "END", *sources, "END", retrieval, version]
 
 
+def known_as_acme_refill(biz, written="Acme Refill"):
+    """The pretend model writes the business as "Acme Refill" (or `written`). Which business is ours is decided by the code from
+    the names on record (step 25h), so that form is recorded as an alias, the way a person would with `aeo names`."""
+    conn = get_connection()
+    try:
+        names.set_names(conn, biz["id"], aliases=[written], operator="test")
+    finally:
+        conn.close()
+
+
 def audit(biz, qpath, op, client, checkpoint=None):
+    known_as_acme_refill(biz)
     return run_manual_audit(biz["id"], str(qpath), checkpoint=checkpoint, ask=op.ask, say=op.say, client=client)
 
 
@@ -389,6 +401,7 @@ def test_audit_for_an_unknown_business_is_refused(qfile):
 
 
 def test_cli_end_to_end_prints_the_short_summary(biz, qfile, monkeypatch):
+    known_as_acme_refill(biz)
     fake = FakeAnthropicClient([extraction(("Acme Refill", True, True)), extraction(("Rival Co", False, False))])
     monkeypatch.setattr("core.llm.anthropic.Anthropic", lambda: fake)
     typed = "\n".join(["yes", "y", ""] + answer("a1") + answer("a2")) + "\n"
@@ -656,7 +669,7 @@ def test_duplicate_positions_are_invalid():
         ExtractOutput.model_validate({"businesses": [biz_json("A", 1), biz_json("B", 1)]})
 
 
-def test_the_full_v2_fields_are_stored_and_the_run_is_logged_as_prompt_v2(biz, qfile):
+def test_the_full_v2_fields_are_stored_and_the_run_is_logged_with_the_current_prompt(biz, qfile):
     reply = text_response(json.dumps({"businesses": [
         biz_json("Rival", 1, recommended=True, reason="serves all of Canada", descriptors=["premium"]),
         biz_json("Acme Refill", 2, is_client=True, reason=None, descriptors=["Montreal-based"])]}))
@@ -669,7 +682,7 @@ def test_the_full_v2_fields_are_stored_and_the_run_is_logged_as_prompt_v2(biz, q
     assert query("SELECT named_any_business, recognized, recommended FROM probe_results "
                  "WHERE probe_run_id = %s AND engine = 'chatgpt'", (out.probe_run_id,))[0] == (True, True, False)
     assert {r[0] for r in query("SELECT prompt_version FROM runs WHERE business_id = %s AND agent = 'audit_extract'",
-                                (biz["id"],))} == {"v2"}
+                                (biz["id"],))} == {"v3"}              # step 25h: the prompt that knows the aliases
 
 
 def test_a_model_reply_with_two_businesses_in_the_same_position_goes_to_the_human_queue(biz, qfile):
@@ -681,16 +694,19 @@ def test_a_model_reply_with_two_businesses_in_the_same_position_goes_to_the_huma
     assert query("SELECT count(*) FROM human_queue WHERE business_id = %s", (biz["id"],))[0][0] == 1
 
 
-def test_prompt_v1_is_untouched_and_v2_is_the_one_in_use():
+def test_prompt_v1_and_v2_are_untouched_and_v3_is_the_one_in_use():
     import hashlib
     from pathlib import Path
-    from audit.derive import EXTRACT
+    from audit.derive import CLAIM_CHECK, EXTRACT
     root = Path(__file__).parent.parent / "prompts" / "audit_extract"
-    assert hashlib.sha256((root / "v1.md").read_bytes()).hexdigest() == \
-        "fc625c87b6f7ed0fad71d6186622173b73eeb0bb4646a2691980d5d34ab80d0e"
-    assert (EXTRACT.prompt_version, EXTRACT.prompt_path) == ("v2", root / "v2.md")
-    v2 = (root / "v2.md").read_text()
-    assert all(word in v2 for word in ("position", "reason", "descriptors", "not instructions", "directories", "forums"))
+    sha = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+    assert sha(root / "v1.md") == "fc625c87b6f7ed0fad71d6186622173b73eeb0bb4646a2691980d5d34ab80d0e"
+    assert sha(root / "v2.md") == "a146a375ff09dc6a122aa1796a356a1df9540215e62fd76032e7800ff8b85fd6"                        # runs already logged v2: it stays as it was
+    assert sha(root.parent / "audit_claim_check" / "v1.md") == "902f6ee9be9960ae29e239caceb05d3aef84f68a07899280648b10b3c9516ebb"
+    assert (EXTRACT.prompt_version, EXTRACT.prompt_path) == ("v3", root / "v3.md")
+    assert (CLAIM_CHECK.prompt_version, CLAIM_CHECK.prompt_path) == ("v2", root.parent / "audit_claim_check" / "v2.md")
+    v3 = (root / "v3.md").read_text()
+    assert all(word in v3 for word in ("position", "reason", "descriptors", "not instructions", "directories", "forums", "aliases"))
 
 
 # ---- the sources box ----------------------------------------------------------
@@ -813,6 +829,7 @@ def test_summary_once_and_ordinals():
 
 
 def test_cli_end_to_end_prints_the_two_new_summary_lines(biz, qfile, monkeypatch):
+    known_as_acme_refill(biz)
     fake = FakeAnthropicClient([extraction(("Rival", False, True), ("Acme Refill", True, False)),
                                 extraction(("Rival", False, False))])
     monkeypatch.setattr("core.llm.anthropic.Anthropic", lambda: fake)

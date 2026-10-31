@@ -21,7 +21,7 @@ from conftest import FakeAnthropicClient
 from core import client_files
 from core.db import get_connection
 from core.profiles import confirmed_facts, latest_profile
-from tests.test_audit import Operator, answer, biz, claims_reply, confirm_facts, extraction, qfile, query  # noqa: F401
+from tests.test_audit import known_as_acme_refill, Operator, answer, biz, claims_reply, confirm_facts, extraction, qfile, query  # noqa: F401
 from tests.test_fill_in import HEADER, all_done, done, fill, generate  # noqa: F401
 from truth import draft as truth_draft, format as fmt
 from truth.importer import (TruthImportAborted, TruthImportError, TruthImportRefused, diff_versions, import_truth)
@@ -469,6 +469,7 @@ def run_with_facts(biz, qfile, facts_edit, tmp_path, conn):
 
 
 def test_a_fill_in_run_is_judged_by_the_version_current_when_it_started(conn, biz, qfile, tmp_path):
+    known_as_acme_refill(biz, "Acme")
     run_with_facts(biz, qfile, lambda t: confirm(t, "Location 1 phone", fact="OLD-111"), tmp_path, conn)       # version 2
     path, made = generate(biz, qfile, tmp_path, questions=(Q,))
     run = store.get_run(conn, made.probe_run_id)
@@ -499,6 +500,7 @@ def test_a_run_started_before_any_confirmed_fact_stays_unchecked_even_after_fact
 
 
 def test_a_terminal_run_records_the_version_it_started_with(conn, biz, qfile, tmp_path):
+    known_as_acme_refill(biz, "Acme")
     run_with_facts(biz, qfile, lambda t: confirm(t, "Location 1 phone", fact="514-555-0100"), tmp_path, conn)
     typed = ["y", ""] + answer("a1") + answer("a2")        # logged out? / location, then the answers
     op = Operator(typed)

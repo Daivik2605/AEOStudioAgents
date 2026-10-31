@@ -17,6 +17,7 @@ from audit.summary import build_summary
 from audit.cost_gate import confirm_cost
 from audit.derive import EXTRACT, DeriveReport, derive_run
 from audit.question_set import QuestionSetError, check_not_edited, load_question_set, resolve_tags
+from core.names import other_names
 from core.checkpoints import CheckpointError, check_checkpoint
 from core.db import get_connection
 from core.journal import write_journal
@@ -69,7 +70,7 @@ def run_manual_audit(business_id: str, question_set_path: str, *, checkpoint: st
             raise AuditError("this business has no profile row (run `aeo add` to create one)")
         try:
             check_not_edited(conn, qs)
-            _, tag_warnings = resolve_tags(qs, business["name"], business["domain"])
+            _, tag_warnings = resolve_tags(qs, business["name"], business["domain"], other_names(business))
         except QuestionSetError as exc:
             raise AuditError(str(exc)) from exc
 

@@ -14,6 +14,7 @@ from uuid import UUID
 import psycopg
 from psycopg.types.json import Jsonb
 
+from core import names
 from core.journal import write_journal
 
 ACTOR = "diagnose"
@@ -36,6 +37,11 @@ def load_business(conn: psycopg.Connection, business_id: str) -> dict | None:
         if profile:
             business["alternate_names"] = list(profile[0] or [])
             business["phone"], business["address"] = profile[1], profile[2]
+    # The names a person recorded with `aeo names` (step 25h): aliases, and earlier canonical names. `alternate_names` is every
+    # other name the business answers to, for the checks that only need "is this a name of the business".
+    identity = names.get_identity(conn, business_id)
+    business["aliases"], business["former_names"] = identity.aliases, identity.former
+    business["alternate_names"] = list(dict.fromkeys([*business["alternate_names"], *identity.aliases, *identity.former]))
     return business
 
 

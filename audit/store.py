@@ -8,6 +8,7 @@ from uuid import UUID
 import psycopg
 from psycopg.types.json import Jsonb
 
+from core import names
 from core.journal import write_journal
 from core.operator import operator_name
 from core.profiles import confirmed_facts
@@ -29,7 +30,9 @@ def load_business_and_profile(conn: psycopg.Connection, business_id: str, profil
         if row is None:
             return None
         business = {"id": str(row[0]), "name": row[1], "domain": row[2], "profile_id": None,
-                    "profile_version": None, "facts": []}
+                    "profile_version": None, "facts": [], "aliases": [], "former_names": []}
+        identity = names.get_identity(conn, business_id)            # aliases and earlier names (step 25h)
+        business["aliases"], business["former_names"] = identity.aliases, identity.former
         if profile_id:
             cur.execute("SELECT id, version, facts FROM business_profiles WHERE business_id = %s AND id = %s",
                         (business_id, profile_id))
@@ -141,7 +144,7 @@ def start_run(conn: psycopg.Connection, *, business: dict, qs, checkpoint: str |
     """Creates the probe_run and journals probe_started. Both capture routes (terminal and fill-in file) use this.
     The journal entry holds the question-set fingerprint that the hash lock checks against."""
     # The callers have already checked the tags (and turned a refusal into a message); this just records them.
-    tags, _ = resolve_tags(qs, business["name"], business["domain"])
+    tags, _ = resolve_tags(qs, business["name"], business["domain"], names.other_names(business))
     run_id = create_run(conn, business=business, checkpoint=checkpoint)
     write_journal(
         business_id=business["id"], entry_type="probe_started", actor=ACTOR,

@@ -29,6 +29,7 @@ from audit.question_set import QuestionSet, QuestionSetError, check_not_edited, 
 from audit.sources import merge_sources, parse_link
 from audit.summary import build_summary
 from core import client_files
+from core.names import other_names
 from core.checkpoints import CheckpointError, check_checkpoint
 from core.db import get_connection
 from core.journal import write_journal
@@ -142,7 +143,7 @@ def generate_fill_in(business_id: str, question_set_path: str, *, checkpoint: st
             raise AuditError("this business has no profile row (run `aeo add` to create one)")
         try:
             check_not_edited(conn, qs)
-            _, tag_warnings = resolve_tags(qs, business["name"], business["domain"])
+            _, tag_warnings = resolve_tags(qs, business["name"], business["domain"], other_names(business))
         except QuestionSetError as exc:
             raise AuditError(str(exc)) from exc
 

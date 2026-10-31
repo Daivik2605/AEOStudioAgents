@@ -11,6 +11,7 @@ import re
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
+from core.names import names_in
 from core.question_length import LENGTHS, length_of  # noqa: F401  (the one rule, PLAN.md section 8; re-exported here for callers)
 from audit.question_set import FACT_TOPICS  # noqa: F401  (the one list; re-exported here)
 from dossier.questions import brand_terms, contains_brand, normalise
@@ -422,11 +423,12 @@ def topup_request(items: list[Candidate], targets: Targets) -> dict | None:
     return {"length": bucket, "count": count, "places": places} if count else None
 
 
-def merge_topup(items: list[Candidate], extras: list[Candidate], targets: Targets, length: str) -> tuple[list[Candidate], list[Candidate]]:
+def merge_topup(items: list[Candidate], extras: list[Candidate], targets: Targets, length: str,
+                protect=None) -> tuple[list[Candidate], list[Candidate]]:
     """(new list, left out). A new question of the asked length goes into an empty place if its (group, language) has
     one; otherwise it takes the place of one question in the same (group, language) whose length is over its target,
     flagged ones first, last in the file first. A new question that fits no place is left out. Nothing is added beyond
-    the plan."""
+    the plan. `protect(question)` is true for a question that must stay (one that uses one of the business's other names)."""
     items = list(items)
     left_out: list[Candidate] = []
     for new in extras:
@@ -439,7 +441,8 @@ def merge_topup(items: list[Candidate], extras: list[Candidate], targets: Target
             items.append(new)                              # an empty place (a question was dropped): fill it, replace nothing
             continue
         victims = [c for c in items if (c.group, c.language) == (new.group, new.language) and not c.control
-                   and counts[length_of(c.text)] > targets.length_aim[length_of(c.text)]]
+                   and counts[length_of(c.text)] > targets.length_aim[length_of(c.text)]
+                   and not (protect and protect(c))]
         if not victims:
             left_out.append(new)
             continue
@@ -455,6 +458,45 @@ def order_for_file(items: list[Candidate], languages: list[str]) -> list[Candida
     group_rank = {"discovery": 0, "control": 1, "brand": 2}
     lang_rank = {lang: i for i, lang in enumerate(languages)}
     return sorted(items, key=lambda c: (group_rank[c.group], lang_rank.get(c.language, len(languages)), rank[length_of(c.text)]))
+
+
+# ---- the business's other names (step 25h) ------------------------------------------------------------------------------------
+
+def alias_gap(items: list[Candidate], canonical: str | None, aliases: list[str]) -> list[str]:
+    """The aliases that no brand question uses yet. A name counts only as whole words, and only the longest name in a
+    question counts (a question that says "Maxim's Family Dentistry" uses that alias, not a shorter name inside it)."""
+    if not aliases:
+        return []
+    everything = [n for n in [canonical, *aliases] if n]
+    used: set[str] = set()
+    for c in items:
+        if c.kind == "brand":
+            used.update(names_in(c.text, everything))
+    return [a for a in aliases if a not in used]
+
+
+def cover_aliases(items: list[Candidate], spare: list[Candidate], canonical: str | None,
+                  aliases: list[str]) -> tuple[list[Candidate], list[Candidate], list[str]]:
+    """(new list, spare left, aliases still unused). For each alias no brand question uses, takes a spare brand question
+    that does and puts it in place of one brand question of the same language that uses no alias and is not flagged
+    (the same length first, the last in the file first). The plan's size does not change and nothing is made up: only
+    questions the model wrote are used."""
+    items, spare = list(items), list(spare)
+    for alias in alias_gap(items, canonical, aliases):
+        everything = [n for n in [canonical, *aliases] if n]
+        pick = next((c for c in spare if c.kind == "brand" and not c.needs_review and alias in names_in(c.text, everything)), None)
+        if pick is None:
+            continue
+        victims = [c for c in items if c.group == "brand" and c.language == pick.language and not c.needs_review
+                   and not (set(names_in(c.text, everything)) & set(aliases))]
+        if not victims:
+            continue
+        same = [c for c in victims if length_of(c.text) == length_of(pick.text)]
+        victim = (same or victims)[-1]
+        items[items.index(victim)] = pick
+        spare.remove(pick)
+        spare.append(victim)
+    return items, spare, alias_gap(items, canonical, aliases)
 
 
 # ---- what the brand questions cover -------------------------------------------------------------------------------------------

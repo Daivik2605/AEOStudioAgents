@@ -22,6 +22,7 @@ from compare.diagnosis import compare_diagnoses
 from core import client_files
 from core.businesses import get_engagement
 from core.checkpoints import CHECKPOINTS
+from core.names import get_identity
 from core.evidence import list_evidence
 from core.profiles import CONFIRMED, latest_profile
 from core.timeline import collect_work
@@ -115,6 +116,8 @@ def load(conn, business: dict) -> dict:
         cur.execute("SELECT alternate_names FROM business_profiles WHERE business_id = %s ORDER BY version DESC LIMIT 1", (bid,))
         row = cur.fetchone()
         alternates = list(row[0] or []) if row else []
+        identity = get_identity(conn, bid)                      # aliases and earlier names recorded with `aeo names` (step 25h)
+        alternates = list(dict.fromkeys([*alternates, *identity.aliases, *identity.former]))
     return {"name": name, "domain": domain, "url": url, "status": status, "diagnoses": diagnoses, "runs": runs,
             "used_versions": used_versions, "recommendations": recommendations, "alternates": alternates,
             "evidence": list_evidence(conn, bid), "profile": latest_profile(conn, bid),

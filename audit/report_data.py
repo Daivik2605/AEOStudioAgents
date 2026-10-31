@@ -19,6 +19,7 @@ from uuid import UUID
 
 from audit import store
 from audit.fill_in import ENGINE_LABELS
+from core.names import other_names
 from core.question_length import length_for
 from dossier.questions import brand_terms, classify
 from scoring import bootstrap, scoring
@@ -169,11 +170,12 @@ for _name, _fn, _num, _den in [
 RECOGNITION = _rate(scoring.recognition_rate, lambda c: c["named"], lambda c: c["n"])
 
 
-def question_types(planned: list[dict] | None, texts: list[str], business: dict) -> dict[str, dict]:
+def question_types(planned: list[dict] | None, texts: list[str], business: dict,
+                   alternates: list[str] | None = None) -> dict[str, dict]:
     """For each question text: its type (discovery / brand), where that came from, its length and its language.
     A run started after step 22d recorded all of this. An older run recorded only intent and target, so the type is
     worked out now from whether the question names the business, and the report says it was derived."""
-    terms = brand_terms(business["name"], business["domain"])
+    terms = brand_terms(business["name"], business["domain"], alternates)
     out: dict[str, dict] = {}
     for q in planned or []:
         if q.get("type"):
@@ -451,7 +453,7 @@ def build_report(conn, business: dict, run: dict, *, partial: bool) -> dict:
 
     # Discovery or brand, short/medium/long, language. A run started before step 22d did not record these; they are
     # worked out now and the report says so.
-    types = question_types(planned, [q["text"] for q in questions], business)
+    types = question_types(planned, [q["text"] for q in questions], business, other_names(profile or {}))
     for q in questions:
         q.update(types[q["text"]])
     # A control question (an unrelated topic, asked to notice drift) is never scored: not in visibility, recommendation,

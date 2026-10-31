@@ -19,7 +19,7 @@ from audit.fill_in import ImportRefused, generate_fill_in, import_fill_in, parse
 from audit.manual import AuditError
 from conftest import FakeAnthropicClient
 from core import client_files
-from tests.test_audit import biz, extraction, qfile, query  # noqa: F401  (fixtures and helpers)
+from tests.test_audit import biz, extraction, known_as_acme_refill, qfile, query  # noqa: F401  (fixtures and helpers)
 
 Q1 = "who supplies water refill stations for events?"
 Q2 = "best refill station rental in Canada"
@@ -140,6 +140,7 @@ def test_generate_refuses_bad_input(biz, qfile, tmp_path):
 # ---- the round trip -----------------------------------------------------------
 
 def test_round_trip_every_field_lands_in_the_same_columns_as_terminal_mode(biz, qfile, tmp_path):
+    known_as_acme_refill(biz)
     path, made = generate(biz, qfile, tmp_path)
     fill(made.path, header=("Sam", "OUT", "Montreal"), **{
         "Q1_chatgpt_r1": done("Acme is great. See https://news.example/story today.", "y", "gpt-5-thinking",
@@ -410,6 +411,7 @@ def test_terminal_mode_still_counts_repeats_itself(biz, qfile):
 
 
 def test_cli_generate_then_import_partial_then_import(biz, qfile, tmp_path, monkeypatch):
+    known_as_acme_refill(biz)
     path = qfile(questions=(Q1,))
     made = CliRunner().invoke(app, ["audit", "--business", biz["id"], "--question-set", str(path),
                                     "--fill-in", "--checkpoint", "before", "--repeats", "2"])
