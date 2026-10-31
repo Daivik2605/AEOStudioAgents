@@ -29,6 +29,15 @@ def _load_env_file(path: Path) -> None:
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
+def database_url() -> str:
+    """The dev database's address (a secret: never print it or write it to a file)."""
+    _load_env_file(ENV_FILE)
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        raise RuntimeError("DATABASE_URL is not set (checked environment and .env)")
+    return url
+
+
 def get_connection() -> psycopg.Connection:
     """Opens a new connection to the app database.
 

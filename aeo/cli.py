@@ -25,7 +25,8 @@ from core import client_files, evidence as ev, files_migrate, status as st, time
 from core.businesses import (ACCESS_LEVELS, ENGAGEMENT_TYPES, BusinessError, add_with_checks, get_engagement,
                              resolve_business, set_engagement)
 from core.checkpoints import CHECKPOINTS, CheckpointError, check_checkpoint
-from core.db import get_connection
+from core import backup as bk
+from core.db import database_url, get_connection
 from core.operator import operator_name
 from truth import draft as truth_draft
 from truth.importer import TruthImportAborted, TruthImportError, TruthImportRefused, import_truth
@@ -849,3 +850,47 @@ def truth_import_cmd(
     typer.secho(f"Saved as profile version {res.version}.", fg=typer.colors.GREEN, bold=True)
     typer.echo(f"{res.confirmed} confirmed fact(s), {res.unconfirmed} unconfirmed.")
     typer.echo(f"A copy of the filled file is kept in: {res.evidence_copy}")
+
+
+@app.command()
+def backup(
+    to: Optional[str] = typer.Option(None, "--to", help="Where backups go (default ~/aeo-backups). Must be outside the project."),
+    include_generated: bool = typer.Option(False, "--include-generated", help="Also back up clients/*/generated/ (it can be rebuilt)."),
+    verify: Optional[str] = typer.Option(None, "--verify", help="Check this backup folder (restores into a scratch database, then drops it)."),
+    list_: bool = typer.Option(False, "--list", help="List the backups in the destination folder."),
+) -> None:
+    """Back up the database and the evidence files to a dated folder (local only). Never overwrites or deletes a backup."""
+    dest = Path(to or "~/aeo-backups").expanduser()
+    if sum([bool(verify), list_]) > 1 or ((verify or list_) and include_generated):
+        _fail("use --verify, --list, or neither (to make a backup); --include-generated only goes with making one.")
+    try:
+        if list_:
+            rows = bk.list_backups(dest)
+            if not rows:
+                typer.echo(f"No backups in {dest}.")
+            for r in rows:
+                lv = r["verified"]
+                state = ("unreadable manifest" if r["problem"] else "not verified" if not lv
+                         else f"verify PASSED {lv['at']}" if lv.get("passed") else f"verify FAILED {lv['at']}")
+                typer.echo(f"{r['name']}   {(r['date'] or 'unknown date')[:16].replace('T', ' ')}   {r['bytes'] / 1_048_576:.1f} MB   {state}")
+            return
+        if verify:
+            typer.echo(f"Checking {verify}. A scratch database is made and dropped; your real databases are not touched.")
+            result = bk.verify_backup(Path(verify), database_url())
+            for c in result.checks:
+                typer.secho(f"{'PASS' if c.ok else 'FAIL'}  {c.name}" + (f": {c.detail}" if c.detail else ""),
+                            fg=typer.colors.GREEN if c.ok else typer.colors.RED)
+            typer.echo("Result: " + ("PASS" if result.passed else "FAIL"))
+            if not result.passed:
+                raise typer.Exit(1)
+            return
+        res = bk.make_backup(database_url(), dest, include_generated=include_generated)
+    except (bk.BackupError, RuntimeError) as exc:
+        _fail(str(exc))
+    typer.echo(f"Database tools used: {res.route.label}")
+    typer.echo(f"Backup saved: {res.folder}")
+    typer.echo(f"{len(res.tables)} tables, {sum(res.tables.values())} rows; {res.archive_files} file(s) in the archive"
+               + (" (generated files included)" if res.include_generated else " (generated files left out)")
+               + f"; {res.bytes / 1_048_576:.1f} MB; took {res.seconds:.1f} s.")
+    typer.echo(f"Check it with: aeo backup --verify {res.folder}")
+    typer.echo(bk.NOTE)

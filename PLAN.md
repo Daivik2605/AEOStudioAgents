@@ -606,8 +606,8 @@ Now: Postgres in Docker on Daivik's Mac, files in `clients/` on the Mac. With th
 | 25c | **Make Phase A output trustworthy** — a blocked check claims nothing (a "Not checked" list, compare treats it as not run); repeated findings shown once with a count and examples; a crawler that cannot connect is retried once, then reported as unconfirmed; control questions are in no score; one length rule from §8; tests refuse to run against the dev database | ✅ Done |
 | 25d | **Question drafts that keep everything, an honest cost card, linked diagnoses** — a judgement-call question is kept and flagged `needs_review` (never in the spot check), a discovery question that names the business is re-tagged brand, exact duplicates are dropped; the prompt states exact counts per length and one top-up call fixes a bucket more than 3 under (at most 3 model calls in all); the cost card shows the worst case and a typical figure from logged runs; `aeo add` links earlier diagnoses saved for the same domain | ✅ Done |
 | 13b | **`aeo questions draft`** — AI drafts candidate buyer questions from the truth document + diagnosis (§16); a person picks and freezes. Also suggests an 8-question spot-check subset | ✅ Done |
-| 17a | **`aeo backup`**, local only — dump the database to the backup folder (§16) | ⏭ Next |
-| 18 | **`aeo brief`** — citation aggregation, content brief + outreach list | |
+| 17a | **`aeo backup`**, local only — dump the database to the backup folder (§16) | ✅ Done |
+| 18 | **`aeo brief`** — citation aggregation, content brief + outreach list | ⏭ Next |
 | 14 | **`aeo guide`** — plain-language runbook of the three prototype phases (A / B / C, §2): every command, when to use it, in what order | |
 | 27 | **Real-data trial** — Phase A on O'land plus 3 unrelated businesses; fix what breaks | |
 | | | **Deferred — specific to one client or one vendor** | |
