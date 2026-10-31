@@ -43,6 +43,8 @@ class DraftInputs:
     diagnosis: dict | None = None
     page_language: str | None = None                      # from <html lang>, if the page says
     language_source: str = ""
+    jsonld_blocks: list = field(default_factory=list)     # structured data from the diagnosis and the page (for the place only)
+    page_text: str = ""                                   # all the text a visitor sees, header and footer included (for the place only)
 
     @property
     def confirmed_ids(self) -> set[int]:
@@ -105,6 +107,8 @@ def gather_inputs(conn, business: dict, *, fetcher: Fetcher | None = None, clien
             out.page_source = "none (the homepage could not be fetched); only the confirmed facts are used"
     parsed = parse_page(html) if html else None
     out.page_language = _page_language(parsed)
+    out.jsonld_blocks = [*((out.diagnosis or {}).get("existing_jsonld") or []), *(parsed.jsonld_raw if parsed else [])]
+    out.page_text = parsed.visible_text if parsed else ""
     out.language_source = ("the page's lang attribute" if out.page_language else "no language is stated on the page")
 
     # ---- the facts ----

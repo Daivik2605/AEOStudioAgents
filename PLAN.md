@@ -396,7 +396,7 @@ One versioned set, written **before** looking at where the client appears. Never
 - Built from personas × places × needs (rent vs buy, branding, scale, sustainability, price). Places the client actually serves, including outside their home city.
 - In the buyer's language: French for Quebec buyers.
 - A few informational questions, untouched by our work, act as the control.
-- Rough mix for a 32-question set: ~24 discovery (40% short, 40% medium, 20% long), ~8 brand (half with the URL).
+- Rough mix for a 32-question set: ~18 discovery plus 4 control (40% short, 40% medium, 20% long), ~10 brand (half with the URL).
 
 ### What is deterministic, and therefore our strongest proof
 
@@ -605,6 +605,7 @@ Now: Postgres in Docker on Daivik's Mac, files in `clients/` on the Mac. With th
 | 25 | **Diagnose additions, generic parts only:** **sitemap check** (a missing or 404 sitemap is a finding — O'land's new site had none at the apex on 15 Oct, which the diagnosis did not flag); **apex/www consistency** (both must serve the same site, or one must 301 to the other); **CDN/host detection from response headers**; **optional old-site redirect check** (fetch the old site's sitemap, confirm every old URL redirects) | ✅ Done |
 | 25c | **Make Phase A output trustworthy** — a blocked check claims nothing (a "Not checked" list, compare treats it as not run); repeated findings shown once with a count and examples; a crawler that cannot connect is retried once, then reported as unconfirmed; control questions are in no score; one length rule from §8; tests refuse to run against the dev database | ✅ Done |
 | 25d | **Question drafts that keep everything, an honest cost card, linked diagnoses** — a judgement-call question is kept and flagged `needs_review` (never in the spot check), a discovery question that names the business is re-tagged brand, exact duplicates are dropped; the prompt states exact counts per length and one top-up call fixes a bucket more than 3 under (at most 3 model calls in all); the cost card shows the worst case and a typical figure from logged runs; `aeo add` links earlier diagnoses saved for the same domain | ✅ Done |
+| 25e | **Customer-realistic questions** — `aeo questions draft --location` (else read from the site; a local business with no place stops and asks); every non-control discovery question carries a place or is rejected and replaced, spread over nine customer needs; brand questions are written the way customers ask, each with a validated `fact_topic` (at least 6 topics, a recognition, a with-URL and a city-plus-name question, no "who owns"); 32 = 18 discovery + 4 control + 10 brand; the spot check takes different needs and different topics; new prompt `v3` (v1 and v2 untouched) | ✅ Done |
 | 13b | **`aeo questions draft`** — AI drafts candidate buyer questions from the truth document + diagnosis (§16); a person picks and freezes. Also suggests an 8-question spot-check subset | ✅ Done |
 | 17a | **`aeo backup`**, local only — dump the database to the backup folder (§16) | ✅ Done |
 | 18 | **`aeo brief`** — citation aggregation, content brief + outreach list | ⏭ Next |

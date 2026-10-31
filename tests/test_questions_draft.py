@@ -56,30 +56,44 @@ class Words:
         return " ".join(self.one() for _ in range(n))
 
 
-def q(text, kind="discovery", language="en", intent="commercial", is_target=False, control=False, relies=None):
+PLACE = "Toronto"           # the location every test run is given; a discovery question must carry it (step 25e)
+
+
+def q(text, kind="discovery", language="en", intent="commercial", is_target=False, control=False, relies=None,
+      need=None, place=None, fact_topic=None):
     return {"text": text, "kind": kind, "language": language, "intent": None if kind == "brand" else intent,
-            "is_target": is_target, "control": control, "relies_on_fact_ids": relies or []}
+            "is_target": is_target, "control": control, "relies_on_fact_ids": relies or [],
+            "need": need, "place": place, "fact_topic": fact_topic}
+
+
+def disc(text, **kw):
+    """A discovery question that carries the place, the way step 25e requires."""
+    return q(f"{text} {PLACE}", place=PLACE, **kw)
 
 
 def clean_set(b: dict, languages=("en", "fr"), words: Words | None = None) -> list[dict]:
-    """A reply that follows the plan for 32 questions: per language 10 discovery, 2 control, 4 brand."""
+    """A reply that follows the plan for 32 questions: per language 9 discovery (each with the place and a different
+    customer need), 2 control, 5 brand (each with a fact_topic, spread over nine topics across the two languages)."""
     w = words or Words()
     name, domain = b["name"], b["domain"]
-    brand = {"en": ["What does {n} do?", "Tell me about {d}", "Where is {n} based?", "Who are the customers of {n}?"],
-             "fr": ["Que fait {n}?", "Parle-moi de {d}", "Où se trouve {n}?", "Qui sont les clients de {n}?"]}
+    brand = {"en": [("What is {n}?", "other"), ("Tell me about {d}", "services"), ("Where is {n} located in Toronto?", "address"),
+                    ("What are the opening hours of {n}?", "hours"), ("Who works at {n}?", "people")],
+             "fr": [("Qu'est-ce que {n}?", "other"), ("Parle-moi de {d}", "services"), ("Quels sont les avis sur {n}?", "rating"),
+                    ("Comment contacter {n}?", "contact"), ("Quels sont les prix chez {n}?", "prices")]}
     out = []
     for lang in languages:
-        sizes = ["short"] * 4 + ["medium"] * 4 + ["long"] * 2
+        sizes = ["short"] * 3 + ["medium"] * 4 + ["long"] * 2
         for i, size in enumerate(sizes):
             n = {"short": 5, "medium": 14, "long": 40}[size]
-            out.append(q(w.many(n), language=lang, is_target=i < 2))
+            out.append(q(w.many(n - 1) + f" {PLACE}", language=lang, is_target=i < 2, place=PLACE, need=plan.NEEDS[i]))
         out += [q(w.many(6) + "?", language=lang, intent="informational", control=True) for _ in range(2)]
-        out += [q(t.format(n=name, d=domain), kind="brand", language=lang) for t in brand.get(lang, brand["en"])]
+        out += [q(t.format(n=name, d=domain), kind="brand", language=lang, fact_topic=topic)
+                for t, topic in brand.get(lang, brand["en"])]
     return out
 
 
-def reply(items) -> str:
-    return json.dumps({"questions": items})
+def reply(items, local=True) -> str:
+    return json.dumps({"local": local, "local_reason": "it has a street address", "questions": items})
 
 
 def fake(*replies) -> FakeAnthropicClient:
@@ -104,12 +118,13 @@ def diagnosed(b: dict, tmp_path: Path, html: str | None = None, jsonld: str | No
     return saved
 
 
-def run(b, tmp_path, client, *, languages=("en", "fr"), size=32, note=None, ask=lambda p: "yes", fetcher=None, said=None):
+def run(b, tmp_path, client, *, languages=("en", "fr"), size=32, note=None, ask=lambda p: "yes", fetcher=None, said=None,
+        location=PLACE):
     conn = get_connection()
     try:
         return draft_questions(conn, b, languages=list(languages) if languages else None, size=size, note=note, ask=ask,
                                say=(said if said is not None else []).append, client=client, fetcher=fetcher,
-                               clients_root=tmp_path / "clients")
+                               clients_root=tmp_path / "clients", location=location)
     finally:
         conn.close()
 
@@ -130,11 +145,11 @@ def test_a_clean_draft_has_the_right_counts_and_tags(biz, tmp_path):
     r = run(biz, tmp_path, client)
     items = file_items(r)
     assert len(items) == 32 and r.calls == 1 and len(client.messages.calls) == 1
-    assert sum(i["type"] == "discovery" for i in items) == 24 and sum(i["type"] == "brand" for i in items) == 8
+    assert sum(i["type"] == "discovery" for i in items) == 22 and sum(i["type"] == "brand" for i in items) == 10
     assert sum(i["control"] for i in items) == 4
     for lang in ("en", "fr"):
-        assert sum(i["language"] == lang and i["type"] == "brand" for i in items) == 4
-        assert sum(i["language"] == lang and i["type"] == "discovery" and not i["control"] for i in items) == 10
+        assert sum(i["language"] == lang and i["type"] == "brand" for i in items) == 5
+        assert sum(i["language"] == lang and i["type"] == "discovery" and not i["control"] for i in items) == 9
     for i in items:
         assert set(i) >= {"text", "type", "length", "language", "is_target", "control", "spot_check"}
         assert i["length"] in plan.LENGTHS and i["language"] in ("en", "fr")
@@ -153,14 +168,14 @@ def test_the_draft_is_logged_like_other_ai_runs(biz, tmp_path):
                            "WHERE business_id = %s AND agent = %s", (biz["id"], AGENT)).fetchone()
     finally:
         conn.close()
-    assert row[0] == "claude-sonnet-5" and row[1] == "v2" and (row[2], row[3]) == (3000, 1800) and float(row[4]) > 0 and row[5] == "success"
+    assert row[0] == "claude-sonnet-5" and row[1] == "v3" and (row[2], row[3]) == (3000, 1800) and float(row[4]) > 0 and row[5] == "success"
     assert r.cost["calls"] == 1 and r.cost["input_tokens"] == 3000 and abs(r.cost["cost_usd"] - float(row[4])) < 1e-9
 
 
 def test_the_summary_shows_counts_the_spot_check_and_the_cost(biz, tmp_path):
     diagnosed(biz, tmp_path)
     text = "\n".join(summary_lines(run(biz, tmp_path, fake(clean_set(biz)))))
-    assert "24 discovery (of which 4 control) and 8 brand" in text and "By language: 16 en, 16 fr" in text and "AI cost: 1 call(s)" in text
+    assert "22 discovery (of which 4 control) and 10 brand" in text and "By language: 16 en, 16 fr" in text and "AI cost: 1 call(s)" in text
     assert text.count("\n  ") >= 8 and "spot-check questions" in text
 
 
@@ -189,7 +204,7 @@ def test_a_discovery_question_with_the_brand_is_retagged_brand_and_flagged_not_d
     w = Words(99)
     bad[0] = q(f"Is {biz['name']} a good water station supplier?")
     bad[1] = q(f"best water stations near {biz['domain']}", is_target=True)
-    replacements = [q(w.many(5)), q(w.many(14))]
+    replacements = [disc(w.many(4)), disc(w.many(13))]
     client = fake(bad, replacements)
     said: list = []
     r = run(biz, tmp_path, client, said=said)
@@ -231,9 +246,9 @@ def test_a_brand_question_that_does_not_name_the_business_is_rejected(biz, tmp_p
 def test_a_claim_question_is_kept_and_flagged_but_one_relying_on_an_unconfirmed_fact_is_dropped(biz, tmp_path):
     diagnosed(biz, tmp_path)                                       # a prospect: nothing is confirmed
     items = clean_set(biz)
-    items[10] = q(f"Does {biz['name']} offer water stations for festivals?", kind="brand")      # states a claim, relies on nothing
-    items[11] = q(f"What events does {biz['name']} serve?", kind="brand", relies=[1])            # relies on a fact that is not confirmed
-    r = run(biz, tmp_path, fake(items, items[10:12]))
+    items[11] = q(f"Does {biz['name']} offer water stations for festivals?", kind="brand", fact_topic="services")      # states a claim, relies on nothing
+    items[12] = q(f"What events does {biz['name']} serve?", kind="brand", relies=[1], fact_topic="services")          # relies on a fact that is not confirmed
+    r = run(biz, tmp_path, fake(items, items[11:13]))
     assert any("not confirmed facts" in " ".join(x.reasons) for x in r.rejected)
     assert not any("What events does" in i["text"] for i in file_items(r))
     claim = next(i for i in file_items(r) if "offer water stations" in i["text"])
@@ -244,7 +259,7 @@ def test_a_brand_question_relying_on_a_confirmed_fact_is_allowed(biz, tmp_path):
     confirm_facts(biz, Services="water refill station rental")
     diagnosed(biz, tmp_path)
     items = clean_set(biz)
-    items[10] = q(f"Does {biz['name']} offer water refill station rental?", kind="brand", relies=[1])
+    items[11] = q(f"Does {biz['name']} offer water refill station rental?", kind="brand", relies=[1], fact_topic="services")
     r = run(biz, tmp_path, fake(items))
     assert r.rejected == [] and any("Does" in i["text"] for i in file_items(r))
 
@@ -276,7 +291,7 @@ def test_contradictory_tags_are_corrected_not_trusted(biz, tmp_path):
 
 def test_extra_questions_beyond_the_plan_are_left_out_and_reported(biz, tmp_path):
     diagnosed(biz, tmp_path)
-    items = clean_set(biz) + [q(Words(5).many(6), language="en")]
+    items = clean_set(biz) + [disc(Words(5).many(5), need="service")]
     r = run(biz, tmp_path, fake(items))
     assert len(file_items(r)) == 32 and len(r.surplus) == 1 and "extra question(s) beyond the plan" in "\n".join(summary_lines(r))
 
@@ -330,7 +345,7 @@ def test_the_spot_check_covers_every_requested_language(biz):
     items = clean_set(biz, langs[:2])
     es = [dict(i, language="es", text=i["text"] + " mas") for i in items[:8]]
     es_words = Words(33)
-    es = [q(es_words.many(6 + k), language="es") for k in range(5)] + [q(f"Qué hace {biz['name']}?", kind="brand", language="es")]
+    es = [disc(es_words.many(5 + k), language="es", need=plan.NEEDS[k]) for k in range(5)] + [q(f"Qué hace {biz['name']}?", kind="brand", language="es", fact_topic="services")]
     kept, _ = plan.check_questions(items + es, name=biz["name"], domain=biz["domain"], alternates=[], languages=langs,
                                    confirmed_fact_ids=set(), already=[])
     ordered = plan.order_for_file(kept, langs)
@@ -339,7 +354,7 @@ def test_the_spot_check_covers_every_requested_language(biz):
 
 
 def test_a_small_set_gives_as_many_as_it_can_and_never_a_control(biz):
-    items = [q(Words(2).many(6))] + [q(f"What does {biz['name']} do?", kind="brand"), q("How long do tortoises live?", intent="informational", control=True)]
+    items = [q(Words(2).many(6))] + [q(f"What does {biz['name']} do?", kind="brand", fact_topic="services"), q("How long do tortoises live?", intent="informational", control=True)]
     kept, _ = plan.check_questions(items, name=biz["name"], domain=biz["domain"], alternates=[], languages=["en"],
                                    confirmed_fact_ids=set(), already=[])
     chosen = plan.choose_spot_check(kept, ["en"], biz["domain"])
@@ -350,12 +365,12 @@ def test_a_small_set_gives_as_many_as_it_can_and_never_a_control(biz):
 
 def test_the_plan_scales_with_the_size_and_splits_across_languages():
     t = plan.make_targets(32, ["en", "fr"])
-    assert (t.discovery, t.control, t.brand) == (20, 4, 8) and t.by_language["fr"] == {"discovery": 10, "control": 2, "brand": 4}
+    assert (t.discovery, t.control, t.brand) == (18, 4, 10) and t.by_language["fr"] == {"discovery": 9, "control": 2, "brand": 5}
     assert t.length_aim == {"short": 13, "medium": 13, "long": 6}
     small = plan.make_targets(16, ["en"])
-    assert (small.discovery, small.control, small.brand) == (10, 2, 4) and small.discovery + small.control + small.brand == 16
+    assert (small.discovery, small.control, small.brand) == (9, 2, 5) and small.discovery + small.control + small.brand == 16
     three = plan.make_targets(32, ["en", "fr", "es"])
-    assert sum(r["discovery"] for r in three.by_language.values()) == 20 and three.by_language["en"]["discovery"] == 7
+    assert sum(r["discovery"] for r in three.by_language.values()) == 18 and three.by_language["en"]["discovery"] == 6
     for bad in (5, 11, 101):
         with pytest.raises(ValueError):
             plan.make_targets(bad, ["en"])
@@ -366,7 +381,7 @@ def test_two_languages_give_questions_in_both(biz, tmp_path):
     client = fake(clean_set(biz))
     r = run(biz, tmp_path, client, languages=("en", "fr"))
     assert {i["language"] for i in file_items(r)} == {"en", "fr"}
-    assert sent_to_model(client)["languages"] == ["en", "fr"] and sent_to_model(client)["plan"]["per_language"]["fr"]["brand"] == 4
+    assert sent_to_model(client)["languages"] == ["en", "fr"] and sent_to_model(client)["plan"]["per_language"]["fr"]["brand"] == 5
 
 
 def test_the_default_language_is_the_pages_own_else_english(biz, tmp_path):
@@ -499,7 +514,7 @@ def test_the_file_loads_with_the_existing_loader_and_resolve_tags(biz, tmp_path)
     qs = load_question_set(r.path)
     assert qs.version == "question_set_draft_v1" and len(qs.items) == 32
     tags, warnings = resolve_tags(qs, biz["name"], biz["domain"])
-    assert warnings == [] and sum(t["type"] == "brand" for t in tags) == 8 and all(t["type_source"] == "tag" for t in tags)
+    assert warnings == [] and sum(t["type"] == "brand" for t in tags) == 10 and all(t["type_source"] == "tag" for t in tags)
     assert [t["length"] for t in tags] == [i["length"] for i in file_items(r)]        # the tags are what the loader sees
     read = dossier_questions.read_questions(r.path)                                    # and the dossier reads it too
     assert len(read["items"]) == 32 and sum(i["spot_check"] for i in read["items"]) == 8
@@ -509,7 +524,7 @@ def test_the_header_says_draft_not_frozen_and_where_it_came_from(biz, tmp_path):
     diagnosed(biz, tmp_path)
     r = run(biz, tmp_path, fake(clean_set(biz)))
     head = "\n".join(r.path.read_text().splitlines()[:8])
-    assert "DRAFT v1 (NOT FROZEN)" in head and "model claude-sonnet-5" in head and "prompt questions_draft/v2" in head
+    assert "DRAFT v1 (NOT FROZEN)" in head and "model claude-sonnet-5" in head and "prompt questions_draft/v3" in head
     assert datetime.now().date().isoformat() in head or datetime.now(timezone.utc).date().isoformat() in head
     assert "diagnosis before of" in head and "website only, every fact unconfirmed" in head and "never writes there" in head
 
@@ -553,7 +568,7 @@ def test_the_run_is_noted_in_the_journal(biz, tmp_path):
                                (biz["id"],)).fetchone()[0]
     finally:
         conn.close()
-    assert details["draft"] == "question_set_draft_v1.yaml" and details["model"] == "claude-sonnet-5" and details["prompt_version"] == "v2"
+    assert details["draft"] == "question_set_draft_v1.yaml" and details["model"] == "claude-sonnet-5" and details["prompt_version"] == "v3"
 
 
 # ---- the command ----------------------------------------------------------------------------------------------------------------------------------

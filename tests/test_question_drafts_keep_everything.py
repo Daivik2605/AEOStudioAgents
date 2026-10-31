@@ -16,7 +16,7 @@ from core.db import get_connection
 from questions_draft import plan, run as qrun
 from tests.conftest import FakeResponse, FakeUsage
 from tests.test_audit import biz, confirm_facts  # noqa: F401  (fixtures and helpers)
-from tests.test_questions_draft import (Words, clean_set, diagnosed, fake, file_items, person_at_keyboard,  # noqa: F401
+from tests.test_questions_draft import (Words, clean_set, diagnosed, disc, fake, file_items, person_at_keyboard,  # noqa: F401
                                         q, reply, run, sent_to_model)
 
 
@@ -29,7 +29,7 @@ def spot(items):
 def test_a_soft_flagged_question_is_in_the_file_with_its_flag_and_never_in_the_spot_check(biz, tmp_path):
     diagnosed(biz, tmp_path)
     items = clean_set(biz)
-    claim = q(f"Does {biz['name']} offer water stations for festivals?", kind="brand")
+    claim = q(f"Does {biz['name']} offer water stations for festivals?", kind="brand", fact_topic="services")
     items[10] = claim                                                      # a brand slot, first in file order among brand
     r = run(biz, tmp_path, fake(items))
     saved = file_items(r)
@@ -43,8 +43,8 @@ def test_a_soft_flagged_question_is_in_the_file_with_its_flag_and_never_in_the_s
 def test_flagged_questions_are_never_chosen_even_when_they_come_first(biz, tmp_path):
     diagnosed(biz, tmp_path)
     items = clean_set(biz)
-    items[0] = q(f"Does {biz['name']} deliver on weekends?", kind="brand")             # flagged, would be first in its group
-    items[1] = q(f"Is {biz['name']} open at night?", kind="brand")
+    items[0] = q(f"Does {biz['name']} deliver on weekends?", kind="brand", fact_topic="services")             # flagged, would be first in its group
+    items[1] = q(f"Is {biz['name']} open at night?", kind="brand", fact_topic="services")
     r = run(biz, tmp_path, fake(items))
     assert len(spot(file_items(r))) == 8
     assert not any(i.get("needs_review") and i["spot_check"] for i in file_items(r))
@@ -80,7 +80,7 @@ def test_the_loader_refuses_a_badly_typed_flag(tmp_path, entry):
 def test_the_saved_draft_passes_the_audit_loader_with_flags_in_it(biz, tmp_path):
     diagnosed(biz, tmp_path)
     items = clean_set(biz)
-    items[10] = q(f"Does {biz['name']} serve festivals?", kind="brand")
+    items[10] = q(f"Does {biz['name']} serve festivals?", kind="brand", fact_topic="services")
     r = run(biz, tmp_path, fake(items))
     qs = load_question_set(r.path)
     assert sum(1 for x in qs.items if x.needs_review) == 1 and '"needs_review": true' in r.path.read_text()
@@ -92,7 +92,7 @@ def test_a_discovery_question_naming_the_business_is_retagged_with_target_and_sp
     items = clean_set(biz)
     items[0] = q(f"best water stations near {biz['domain']}", is_target=True)
     items[1] = q(f"Compare {biz['name']} and others", is_target=True, control=True, intent="informational")
-    r = run(biz, tmp_path, fake(items, [q(Words(41).many(5)), q(Words(42).many(14))]))
+    r = run(biz, tmp_path, fake(items, [disc(Words(41).many(4)), disc(Words(42).many(13))]))
     for text in (items[0]["text"], items[1]["text"]):
         i = next(x for x in file_items(r) if x["text"] == text)
         assert i["type"] == "brand" and not i["is_target"] and not i["control"] and not i["spot_check"] and i["needs_review"]
@@ -143,7 +143,7 @@ def test_a_brand_question_with_an_intent_or_control_flag_is_repaired(biz, tmp_pa
 def test_the_summary_prints_the_three_groups(biz, tmp_path):
     diagnosed(biz, tmp_path)
     items = clean_set(biz)
-    items[10] = q(f"Does {biz['name']} serve festivals?", kind="brand")
+    items[10] = q(f"Does {biz['name']} serve festivals?", kind="brand", fact_topic="services")
     items[1] = dict(items[0])
     out = "\n".join(qrun.summary_lines(run(biz, tmp_path, fake(items, []))))
     assert "1. Kept, clean:" in out and "2. Kept and FLAGGED for review" in out and "3. Dropped, not in the file: 1" in out
@@ -169,10 +169,11 @@ def lopsided(b: dict) -> list[dict]:
     w = Words(3)
     out = []
     for lang in ("en", "fr"):
-        out += [q(w.many(5 if i == 0 else 14), language=lang, is_target=i < 2) for i in range(10)]
+        out += [disc(w.many(4 if i == 0 else 13), language=lang, is_target=i < 2, need=plan.NEEDS[i]) for i in range(9)]
         out += [q(w.many(14) + "?", language=lang, intent="informational", control=True) for _ in range(2)]
-        out += [q(t.format(n=b["name"], d=b["domain"]) + " " + w.many(8), kind="brand", language=lang)
-                for t in ("What does {n} do?", "Tell me about {d}", "Where is {n} based?", "Who are the customers of {n}?")]
+        out += [q(t.format(n=b["name"], d=b["domain"]) + " " + w.many(8), kind="brand", language=lang, fact_topic=topic)
+                for t, topic in (("What is {n}?", "other"), ("Tell me about {d}", "services"), ("Where is {n} based?", "address"),
+                                 ("What are the hours of {n}?", "hours"), ("Who are the staff at {n}?", "people"))]
     return out
 
 
@@ -189,8 +190,8 @@ def test_a_bucket_far_under_target_gets_one_top_up_asking_only_for_it(biz, tmp_p
     assert request["length"] == "short"
     new = []
     for place in request["places"]:
-        new += [q(w.many(4), kind=place["group"], language=place["language"]) if place["group"] == "discovery"
-                else q(f"{biz['name']} {w.many(2)}", kind="brand", language=place["language"]) for _ in range(place["count"])]
+        new += [disc(w.many(3), language=place["language"]) if place["group"] == "discovery"
+                else q(f"{biz['name']} {w.many(2)}", kind="brand", language=place["language"], fact_topic="hours") for _ in range(place["count"])]
     client = fake(first, new)
     r = run(biz, tmp_path, client)
     assert r.calls == 2 and len(client.messages.calls) == 2 and r.topped_up == "short"
@@ -228,7 +229,7 @@ def test_the_whole_command_never_makes_more_than_three_model_calls(biz, tmp_path
     diagnosed(biz, tmp_path)
     bad = lopsided(biz)
     bad[0] = {**bad[0], "text": ""}
-    client = fake("this is not json", bad, [q(Words(5).many(4))])        # a fourth reply is not queued: asking would fail the test
+    client = fake("this is not json", bad, [disc(Words(5).many(3))])        # a fourth reply is not queued: asking would fail the test
     r = run(biz, tmp_path, client)
     assert len(client.messages.calls) == 3 and run_count(biz) == 3 and r.topped_up is None and r.cost["calls"] == 3
 
@@ -237,7 +238,7 @@ def test_a_top_up_that_fails_is_a_warning_and_the_calls_stay_at_three(biz, tmp_p
     diagnosed(biz, tmp_path)
     bad = lopsided(biz)
     bad[0] = {**bad[0], "text": ""}
-    client = fake(bad, [q(Words(8).many(14))], "not json at all")
+    client = fake(bad, [disc(Words(8).many(13))], "not json at all")
     r = run(biz, tmp_path, client)
     assert len(client.messages.calls) == 3 and run_count(biz) == 3
     assert any("top-up request did not return a usable reply" in w for w in r.warnings)
@@ -287,9 +288,9 @@ def test_the_real_cost_of_a_three_call_run_never_exceeds_the_up_to_figure(biz, t
     diagnosed(biz, tmp_path)
     bad = lopsided(biz)
     bad[0] = {**bad[0], "text": ""}
-    request_reply = [q(Words(9).many(4), language="en")]
+    request_reply = [disc(Words(9).many(3), language="en")]
     said: list = []
-    client = MaxedOut(fake(bad, [q(Words(8).many(14))], request_reply))
+    client = MaxedOut(fake(bad, [disc(Words(8).many(13))], request_reply))
     r = run(biz, tmp_path, client, said=said)
     assert r.cost["calls"] == 3
     assert r.cost["cost_usd"] <= figure(said, "Up to $") + 1e-9
@@ -299,7 +300,7 @@ def test_the_real_cost_of_a_three_call_run_never_exceeds_the_up_to_figure(biz, t
 def test_the_up_to_figure_also_covers_a_reply_that_needs_run_agents_own_retry(biz, tmp_path):
     diagnosed(biz, tmp_path)
     said: list = []
-    client = MaxedOut(fake("garbage", lopsided(biz), [q(Words(4).many(4))]))
+    client = MaxedOut(fake("garbage", lopsided(biz), [disc(Words(4).many(3))]))
     r = run(biz, tmp_path, client, said=said)
     assert r.cost["calls"] <= 3 and r.cost["cost_usd"] <= figure(said, "Up to $") + 1e-9
 

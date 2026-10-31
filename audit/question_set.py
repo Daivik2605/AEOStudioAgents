@@ -15,6 +15,7 @@
         spot_check: true          # optional: part of the small first-look set
         needs_review: true        # optional: a drafted question a person must look at before freezing
         review_reason: "..."      # optional: why (only meaningful with needs_review)
+        fact_topic: hours         # optional, brand questions only: what fact the correct answer is about (FACT_TOPICS)
 
 The version is the file's name without ".yaml" (here: "oland-stations_v1"), so
 the file and its version can never disagree. The name must end in _v1, _v2 ...
@@ -54,6 +55,11 @@ class QuestionSetError(Exception):
 
 INTENTS = ("commercial", "informational", "navigational")
 
+# What a brand question asks about, so a report can score the answer against the right confirmed fact (PLAN.md step 25e).
+# "other" is for a question with no single fact behind it, such as "What is X?".
+FACT_TOPICS = ("rating", "people", "services", "hours", "address", "contact", "insurance", "prices", "languages",
+               "availability", "other")
+
 
 @dataclass
 class Question:
@@ -67,6 +73,7 @@ class Question:
     spot_check: bool = False
     needs_review: bool = False
     review_reason: str | None = None
+    fact_topic: str | None = None   # brand questions only; one of FACT_TOPICS
 
 
 @dataclass
@@ -124,10 +131,11 @@ def load_question_set(path: str | Path) -> QuestionSet:
     # keeps the fingerprint it was frozen with. (What the audit works out itself is not in the file, so not here.)
     def canonical_entry(q: Question):
         if (q.intent is None and not q.is_target and q.type is None and q.length is None
-                and q.language is None and not q.control and not q.spot_check and not q.needs_review):
+                and q.language is None and not q.control and not q.spot_check and not q.needs_review
+                and q.fact_topic is None):
             return q.text
         entry = {"text": q.text, "intent": q.intent, "is_target": q.is_target}
-        for key in ("type", "length", "language"):
+        for key in ("type", "length", "language", "fact_topic"):
             if getattr(q, key) is not None:
                 entry[key] = getattr(q, key)
         for key in ("control", "spot_check", "needs_review"):
@@ -147,7 +155,7 @@ def _parse_question(filename: str, entry) -> Question:
     if not isinstance(entry, dict):
         raise QuestionSetError(f"{filename}: every question must be text, or a mapping with 'text:'")
     extra = set(entry) - {"text", "intent", "is_target", "type", "length", "language", "control", "spot_check",
-                           "needs_review", "review_reason"}
+                           "needs_review", "review_reason", "fact_topic"}
     if extra:
         raise QuestionSetError(f"{filename}: a question has fields not supported: {', '.join(sorted(extra))}")
     text = entry.get("text")
@@ -173,8 +181,13 @@ def _parse_question(filename: str, entry) -> Question:
     reason = entry.get("review_reason")
     if reason is not None and not isinstance(reason, str):
         raise QuestionSetError(f"{filename}: review_reason must be text (got {reason!r})")
+    topic = entry.get("fact_topic")
+    if topic is not None and topic not in FACT_TOPICS:
+        raise QuestionSetError(f"{filename}: fact_topic must be one of {', '.join(FACT_TOPICS)} (got {topic!r})")
+    if topic is not None and kind == "discovery":
+        raise QuestionSetError(f"{filename}: fact_topic belongs on brand questions only (\"{text.strip()}\" is tagged discovery)")
     return Question(text=text.strip(), intent=intent, is_target=target, type=kind, length=length,
-                    language=language.strip() if language else None,
+                    language=language.strip() if language else None, fact_topic=topic,
                     review_reason=reason.strip() if reason and reason.strip() else None, **flags)
 
 
@@ -205,7 +218,7 @@ def resolve_tags(qs: QuestionSet, business_name: str | None, domain: str | None)
                          "type": kind, "type_source": "tag" if q.type else "derived from the text",
                          "length": length_for(q.text, q.length)[0], "length_source": length_for(q.text, q.length)[1],
                          "language": q.language, "control": q.control, "spot_check": q.spot_check,
-                         "needs_review": q.needs_review, "review_reason": q.review_reason})
+                         "needs_review": q.needs_review, "review_reason": q.review_reason, "fact_topic": q.fact_topic})
     return resolved, warnings
 
 

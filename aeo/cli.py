@@ -769,6 +769,7 @@ def questions_draft_cmd(
     languages: Optional[str] = typer.Option(None, "--languages", help="Comma-separated codes, e.g. en,fr. Default: the language the site's page states, else en."),
     size: int = typer.Option(qplan.DEFAULT_SIZE, "--size", help=f"How many questions in all ({qplan.MIN_SIZE} to {qplan.MAX_SIZE})."),
     note: Optional[str] = typer.Option(None, "--note", help='Context for the drafter, e.g. "serves Quebec only". Not a source of facts.'),
+    location: Optional[str] = typer.Option(None, "--location", help='The city or area customers search in, e.g. "Toronto". Default: read from the site; a local business with none found stops and asks.'),
     yes: bool = typer.Option(False, "--yes", hidden=True),
 ) -> None:
     """Draft a first set of questions with AI, for a person to review. Costs a little: a cost card and a typed yes come first."""
@@ -783,7 +784,7 @@ def questions_draft_cmd(
     b = _find_business(domain)
     conn = get_connection()
     try:
-        result = qdraft.draft_questions(conn, b, languages=codes, size=size, note=note, ask=input, say=typer.echo)
+        result = qdraft.draft_questions(conn, b, languages=codes, size=size, note=note, ask=input, say=typer.echo, location=location)
     except CostGateAborted:
         raise typer.Exit(1)
     except DraftError as exc:

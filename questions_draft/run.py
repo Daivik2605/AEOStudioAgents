@@ -31,11 +31,12 @@ from core.runner import AgentDefinition, AgentOutputInvalid, run_agent
 from core.question_length import MEDIUM_MAX_WORDS, SHORT_MAX_WORDS
 from diagnose.fetch import Fetcher
 from diagnose.store import load_business
+from questions_draft import location as loc
 from questions_draft import plan
 from questions_draft.inputs import DraftInputError, DraftInputs, gather_inputs, utc_day
 
 MODEL = "claude-sonnet-5"                 # price is in core/model_prices.json
-PROMPT_VERSION = "v2"           # v1 stays on disk, untouched, for the drafts and runs that used it
+PROMPT_VERSION = "v3"           # v1 and v2 stay on disk, untouched, for the drafts and runs that used them
 PROMPTS = Path(__file__).parent.parent / "prompts"
 AGENT = "questions_draft"
 ACTOR = "aeo questions draft"
@@ -62,9 +63,15 @@ class DraftedQuestion(BaseModel):
     is_target: Any = None
     control: Any = None
     relies_on_fact_ids: Any = None
+    fact_topic: Any = None          # brand questions: what fact the answer is about
+    need: Any = None                # discovery questions: what the customer is settling
+    place: Any = None               # the place word the question carries (checked by code)
 
 
 class DraftOutput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    local: Any = None               # does this business serve customers in one physical area? (the model's choice, shown to the operator)
+    local_reason: Any = None
     questions: list[DraftedQuestion]
 
 
@@ -90,14 +97,22 @@ class DraftResult:
     source_lines: list[str] = field(default_factory=list)
     calls: int = 0
     cost: dict = field(default_factory=dict)            # calls, input_tokens, output_tokens, cost_usd (from `runs`)
+    place: loc.Place = field(default_factory=loc.Place)  # the location used, and where it came from
+    local: bool | None = None                           # the model's choice: does a place belong in the questions
+    local_reason: str | None = None
+    needs: list[str] = field(default_factory=list)      # customer needs the kept discovery questions cover
+    spot_notes: dict[str, str] = field(default_factory=dict)   # spot-check text -> "need: service" or "fact topic: hours"
 
 
 # ---- the request ---------------------------------------------------------------------------------------------------------------
 
-def build_payload(business: dict, inputs: DraftInputs, targets: plan.Targets, languages: list[str], note: str | None) -> dict:
+def build_payload(business: dict, inputs: DraftInputs, targets: plan.Targets, languages: list[str], note: str | None,
+                  place: loc.Place | None = None) -> dict:
+    place = place or loc.Place()
     payload: dict[str, Any] = {
         "business": {"name": business["name"], "domain": business["domain"], "url": business["website_url"]},
         "languages": languages, "operator_note": note or None,
+        "location": place.location, "location_source": place.source or None, "other_places_on_the_site": place.known,
         "facts_source": inputs.facts_source, "facts": inputs.facts,
         "plan": {"total": targets.size, "per_language": targets.by_language},
         "length_aim": targets.length_aim,
@@ -150,7 +165,7 @@ def _still_needed(missing: dict[tuple[str, str], int]) -> list[dict]:
 
 def draft_questions(conn, business: dict, *, languages: list[str] | None, size: int, note: str | None,
                     ask: Callable[[str], str], say: Callable[[str], None], client=None, fetcher: Fetcher | None = None,
-                    clients_root: Path | None = None, today: date | None = None) -> DraftResult:
+                    clients_root: Path | None = None, today: date | None = None, location: str | None = None) -> DraftResult:
     """Gathers what the site and the truth document say, asks the cost gate, drafts, checks, retries once, writes."""
     business = load_business(conn, business["id"])          # name, domain, website address and alternate names
     if business is None:
@@ -170,10 +185,18 @@ def draft_questions(conn, business: dict, *, languages: list[str] | None, size: 
         targets = plan.make_targets(size, languages)
     except ValueError as exc:
         raise DraftError(str(exc)) from exc
+    place = loc.find_place(inputs.jsonld_blocks, inputs.page_text, location)
+    if place.location:
+        source_lines.append(f"Location: {place.location} ({place.source}).")
+    else:
+        source_lines.append("Location: none given with --location and none found in the page's structured data or text; "
+                            "the model will say whether this business is local.")
+    if place.known:
+        source_lines.append("Other places the site names: " + ", ".join(place.known) + ".")
     for line in source_lines:
         say(line)
 
-    payload = build_payload(business, inputs, targets, languages, note)
+    payload = build_payload(business, inputs, targets, languages, note, place)
     # The cost gate: the worst case (every call, as big as it can be) and, separately, what recent runs really cost.
     confirm_cost(MAX_CALLS, model=MODEL, ask=ask, say=say, lines=cost_card(payload, targets, typical_cost(conn)))
 
@@ -188,6 +211,8 @@ def draft_questions(conn, business: dict, *, languages: list[str] | None, size: 
                             (business["id"], AGENT, started)).fetchone()[0]
         return MAX_CALLS - used
 
+    last_reply: list = []
+
     def propose(extra: dict | None, key: str = "retry") -> list[dict]:
         nonlocal calls
         left = calls_left()
@@ -196,6 +221,7 @@ def draft_questions(conn, business: dict, *, languages: list[str] | None, size: 
         calls += 1
         out = run_agent(DRAFT_AGENT, business_id=business["id"], client=client, max_attempts=min(2, left),
                         input_data={**payload, **({key: extra} if extra else {})})
+        last_reply[:] = [out]
         return [q.model_dump() for q in out.questions]
 
     try:
@@ -204,8 +230,32 @@ def draft_questions(conn, business: dict, *, languages: list[str] | None, size: 
         raise DraftError(f"The model did not return a usable draft, even after a retry. It has been put in the review "
                          f"queue (`aeo queue`). Nothing was saved. ({exc})") from exc
 
+    # Is a place needed in the questions? The model says whether the business is local; the operator sees its answer.
+    # With no place known and a local business, there is nothing honest to put in the questions, so the command stops.
+    local = plan._as_bool(last_reply[0].local)
+    local = local if isinstance(local, bool) else None
+    why = " ".join(str(last_reply[0].local_reason or "").split()) or None
+    if not place.location and local is not False:
+        spent = _cost_since(conn, business["id"], started)
+        raise DraftError(
+            ("The model says this business is local" if local else "The model could not say whether this business is local")
+            + (f" ({why})" if why else "") + ", and no place was given or found on its site. A question a customer types names "
+            "a place, and a place is never guessed. Run it again with --location \"<city or area>\". "
+            f"Nothing was saved. One model call was made (${spent['cost_usd']:.4f}).")
+    needs_place = local is not False
+    if local is False:
+        say("The model says this business is not local" + (f" ({why})" if why else "")
+            + ". No place is required in its discovery questions.")
+    elif local:
+        say("The model says this business is local" + (f" ({why})" if why else "") + ". Every discovery question must carry a place.")
+    else:
+        say("The model did not say whether this business is local. A place is required, because one was given or found.")
+    payload["business_is_local"] = needs_place
+    place_rule = loc.PlaceRule(required=needs_place, location=place.location, known=place.known,
+                               by_language=place.by_language, corpus=inputs.page_text)
+
     check = dict(name=name, domain=domain, alternates=alternates, languages=languages,
-                 confirmed_fact_ids=inputs.confirmed_ids)
+                 confirmed_fact_ids=inputs.confirmed_ids, place_rule=place_rule)
     kept, rejected = plan.check_questions(first, already=[], **check)
     fitted, surplus, missing = plan.fit_to_targets(kept, targets)
 
@@ -213,7 +263,7 @@ def draft_questions(conn, business: dict, *, languages: list[str] | None, size: 
     if rejected or missing:
         say(f"{len(rejected)} question(s) were dropped and {sum(missing.values())} are missing: asking once more.")
         try:
-            second = propose({"accepted": [c.text for c in fitted],
+            second = propose({"accepted": [c.text for c in fitted], "fact_topics_used": plan.topics_used(fitted),
                               "rejected": [{"text": r.text, "reasons": r.reasons} for r in rejected],
                               "needed": _still_needed(missing)})
         except (AgentOutputInvalid, DraftError):
@@ -231,7 +281,7 @@ def draft_questions(conn, business: dict, *, languages: list[str] | None, size: 
         say(f"The mix is {request['count']} or more short on {request['length']} questions: asking once for those.")
         try:
             third = propose({"length": request["length"], "count": request["count"], "places": request["places"],
-                             "accepted": [c.text for c in fitted]}, key="topup")
+                             "accepted": [c.text for c in fitted], "fact_topics_used": plan.topics_used(fitted)}, key="topup")
         except (AgentOutputInvalid, DraftError):
             third = []
             warnings.append("The top-up request did not return a usable reply, so the length mix is as the earlier calls left it.")
@@ -247,12 +297,14 @@ def draft_questions(conn, business: dict, *, languages: list[str] | None, size: 
     if len(spot) < plan.SPOT_TOTAL:
         warnings.append(f"Only {len(spot)} question(s) could be flagged for the spot check (it needs {plan.SPOT_TOTAL}).")
     warnings += _length_warnings(items, targets)
+    warnings += plan.coverage_warnings(ordered, name=name, domain=domain, location=place.location, needs_place=needs_place)
     if len(items) > targets.size:
         warnings.append(f"The file holds {len(items)} questions, {len(items) - targets.size} more than the {targets.size} asked for, "
                         "because flagged questions are kept. Remove or reword them when you review.")
 
     version, path, header_warnings = _write(items, business=business, inputs=inputs, languages=languages, targets=targets,
-                                            note=note, rejected=rejected, missing=missing,
+                                            note=note, rejected=rejected, missing=missing, place=place, local=local, why=why,
+                                            needs_place=needs_place,
                                             clients_root=clients_root, today=today or date.today())
     warnings += header_warnings
     cost = _cost_since(conn, business["id"], started)
@@ -268,7 +320,11 @@ def draft_questions(conn, business: dict, *, languages: list[str] | None, size: 
                        spot_check=[it["text"] for it in items if it["spot_check"]], rejected=rejected,
                        surplus=[c.text for c in surplus], missing=missing, warnings=warnings, topped_up=topped_up,
                        repairs=[f"\"{c.text}\": {r}" for c in ordered for r in c.repairs],
-                       source_lines=source_lines, calls=calls, cost=cost)
+                       source_lines=source_lines, calls=calls, cost=cost, place=place, local=local, local_reason=why,
+                       needs=plan.needs_used(ordered),
+                       spot_notes={c.text: (f"need: {c.need}" if c.kind == "discovery" and c.need else
+                                            f"fact topic: {c.fact_topic}" if c.fact_topic else "")
+                                   for c, it in zip(ordered, items) if it["spot_check"]})
 
 
 def _item(c: plan.Candidate, spot: bool) -> dict:
@@ -277,6 +333,8 @@ def _item(c: plan.Candidate, spot: bool) -> dict:
         item["intent"] = c.intent
     item.update({"length": plan.length_of(c.text), "language": c.language, "is_target": c.is_target,
                  "control": c.control, "spot_check": spot and not c.needs_review})
+    if c.kind == "brand" and c.fact_topic:
+        item["fact_topic"] = c.fact_topic
     if c.needs_review:                                   # only flagged questions carry the two fields
         item["needs_review"] = True
         item["review_reason"] = c.review_reason
@@ -314,7 +372,8 @@ def next_version(folder: Path) -> int:
 
 def render_file(items: list[dict], *, version: int, business: dict, inputs: DraftInputs, languages: list[str],
                 targets: plan.Targets, note: str | None, rejected: list[plan.Rejection],
-                missing: dict, today: date) -> str:
+                missing: dict, today: date, place: loc.Place | None = None, local: bool | None = None,
+                why: str | None = None, needs_place: bool = True) -> str:
     who = business["name"] or business["domain"]
     used = (f"truth document version {inputs.truth_version} (confirmed facts only)" if inputs.truth_version
             else "the business's website only, every fact unconfirmed")
@@ -331,6 +390,15 @@ def render_file(items: list[dict], *, version: int, business: dict, inputs: Draf
         f"{SHORT_MAX_WORDS + 1}-{MEDIUM_MAX_WORDS}, long two or more sentences or over {MEDIUM_MAX_WORDS}; PLAN.md section 8),",
         "#       language, is_target, control (unrelated topic, to notice drift), spot_check (the eight for the quick Phase A check).",
     ]
+    place = place or loc.Place()
+    where = (f"{place.location} ({place.source})" if place.location else "none")
+    choice = {True: "yes", False: "no", None: "not stated"}[local]
+    lines.append(f"# Location used: {where}. Local business (the model's choice, check it): {choice}"
+                 + (f" - {_one_line(why)}" if why else "") + (". Discovery questions carry a place." if needs_place else ". No place is required."))
+    rating = any(it.get("fact_topic") == "rating" for it in items)
+    if rating:
+        lines.append("# fact_topic: rating - the correct answer for a rating question comes from a live source (the Google Business Profile "
+                     "evidence). Check it against the evidence file for the same date; it is not in the truth document.")
     flagged = sum(1 for it in items if it.get("needs_review"))
     if flagged:
         lines.append(f"# {flagged} question(s) are flagged needs_review: true, each with a review_reason. A person decides whether to keep, reword or remove them.")
@@ -338,7 +406,10 @@ def render_file(items: list[dict], *, version: int, business: dict, inputs: Draf
         lines.append(f"# {len(rejected)} proposed question(s) were dropped by the checks and are not in this file (see the command's summary).")
     if missing:
         lines.append("# STILL MISSING: " + ", ".join(f"{n} {g} in {lang}" for (g, lang), n in sorted(missing.items())) + ". Add them by hand.")
-    lines += [f"note: {json.dumps('DRAFT, not frozen. Generated by AI from ' + used + '. Review every question before freezing.')}",
+    note_text = "DRAFT, not frozen. Generated by AI from " + used + ". Review every question before freezing."
+    if rating:
+        note_text += " A rating question is scored against the live Google Business Profile evidence for the same date, not the truth document."
+    lines += [f"note: {json.dumps(note_text)}",
               "questions:"]
     lines += [f"  - {json.dumps(item, ensure_ascii=False)}" for item in items]
     return "\n".join(lines) + "\n"
@@ -346,14 +417,16 @@ def render_file(items: list[dict], *, version: int, business: dict, inputs: Draf
 
 def _write(items: list[dict], *, business: dict, inputs: DraftInputs, languages: list[str], targets: plan.Targets,
            note: str | None, rejected: list[plan.Rejection], missing: dict,
-           clients_root: Path | None, today: date) -> tuple[int, Path, list[str]]:
+           clients_root: Path | None, today: date, place: loc.Place | None = None, local: bool | None = None,
+           why: str | None = None, needs_place: bool = True) -> tuple[int, Path, list[str]]:
     """Checks the file with the audit's own loader, then saves it as the next draft number. Never overwrites."""
     folder = client_files.client_dir(business["domain"], clients_root)
     folder.mkdir(parents=True, exist_ok=True)
     for _ in range(20):                                    # a second process could take a number between our look and our write
         version = next_version(folder)
         text = render_file(items, version=version, business=business, inputs=inputs, languages=languages, targets=targets,
-                           note=note, rejected=rejected, missing=missing, today=today)
+                           note=note, rejected=rejected, missing=missing, today=today, place=place, local=local,
+                           why=why, needs_place=needs_place)
         warnings = _check_with_loader(text, version, business)
         path = folder / f"question_set_draft_v{version}.yaml"
         try:
@@ -397,7 +470,13 @@ def summary_lines(r: DraftResult) -> list[str]:
              " (aim: " + ", ".join(f"{n} {k}" for k, n in r.targets.length_aim.items()) + ")." +
              (f" A top-up for {r.topped_up} questions was asked." if r.topped_up else ""),
              "By language: " + ", ".join(f"{n} {k}" for k, n in count("language").items()) + "."]
-    lines += ["", f"The {len(r.spot_check)} spot-check questions (never a flagged one):"] + [f"  {i}. {t}" for i, t in enumerate(r.spot_check, start=1)]
+    where = f"{r.place.location} ({r.place.source})" if r.place.location else "none"
+    choice = {True: "local", False: "not local: no place required", None: "not stated"}[r.local]
+    lines += [f"Location used: {where}. The model says the business is {choice}" + (f" ({r.local_reason})" if r.local_reason else "") + "."]
+    if r.needs:
+        lines += ["Customer needs covered by the discovery questions: " + ", ".join(r.needs) + "."]
+    lines += ["", f"The {len(r.spot_check)} spot-check questions (never a flagged one):"]
+    lines += [f"  {i}. {t}" + (f"   [{r.spot_notes[t]}]" if r.spot_notes.get(t) else "") for i, t in enumerate(r.spot_check, start=1)]
 
     lines += ["", f"1. Kept, clean: {len(clean)} question(s)."]
     if r.repairs:

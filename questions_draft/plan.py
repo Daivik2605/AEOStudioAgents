@@ -12,14 +12,21 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
 from core.question_length import LENGTHS, length_of  # noqa: F401  (the one rule, PLAN.md section 8; re-exported here for callers)
+from audit.question_set import FACT_TOPICS  # noqa: F401  (the one list; re-exported here)
 from dossier.questions import brand_terms, contains_brand, normalise
+from questions_draft.location import PlaceRule, anchor, language_issue
 
 KINDS = ("discovery", "brand")
 INTENTS = ("commercial", "informational")
 
 MIN_SIZE, MAX_SIZE, DEFAULT_SIZE = 12, 100, 32
-DISCOVERY_SHARE = 0.75                  # of the whole set, controls included: 24 of 32
+BRAND_PER_32 = 10                       # PLAN.md section 8: at 32, 18 discovery + 4 control + 10 brand
 CONTROLS_PER_32 = 4
+MIN_TOPICS = 6                          # brand questions spread over at least this many fact topics (fewer if fewer questions)
+
+# What a customer is trying to settle when choosing a business (PLAN.md step 25e). The draft's discovery questions are
+# spread across these; the spot check takes different ones. Kept in the draft result only, not in the file.
+NEEDS = ("service", "urgent", "price", "payment", "audience", "trust", "convenience", "language", "compare")
 LENGTH_AIM = {"short": 0.40, "medium": 0.40, "long": 0.20}
 LENGTH_TOLERANCE = 0.15                 # the summary warns when a length is this far from its aim
 
@@ -59,9 +66,8 @@ def make_targets(size: int, languages: list[str]) -> Targets:
     if not languages:
         raise ValueError("at least one language is needed")
     control = max(1, _round(size * CONTROLS_PER_32 / 32))
-    discovery_total = _round(size * DISCOVERY_SHARE)
-    brand = size - discovery_total
-    discovery = discovery_total - control
+    brand = _round(size * BRAND_PER_32 / 32)
+    discovery = size - brand - control
     d, c, b = (_split(n, len(languages)) for n in (discovery, control, brand))
     by_language = {lang: {"discovery": d[i], "control": c[i], "brand": b[i]} for i, lang in enumerate(languages)}
     short, medium = _round(size * LENGTH_AIM["short"]), _round(size * LENGTH_AIM["medium"])
@@ -83,6 +89,11 @@ class Candidate:
     needs_review: bool = False          # kept, but a person must look (a judgement call, not a certain fault)
     review_reason: str | None = None
     repairs: list[str] = field(default_factory=list)   # tags fixed where the intent was clear
+    fact_topic: str | None = None       # brand questions: what fact the answer is about (FACT_TOPICS)
+    need: str | None = None             # discovery questions: what the customer is settling (NEEDS); not saved in the file
+    place: str | None = None            # the place word the model says it used; checked, not trusted
+    place_how: str | None = None        # how the question carries a place, when one was required
+    needs_place: bool = False           # a place was required of this question
 
     @property
     def group(self) -> str:
@@ -98,6 +109,8 @@ class Rejection:
 # A yes/no question that states a claim about the business. English and French shapes; this is a heuristic, which is why
 # the model must also say which confirmed fact a question relies on (relies_on_fact_ids).
 _YES_NO_START = re.compile(r"^\s*(does|do|did|is|are|was|were|can|could|will|would|has|have|had|should)\b", re.I)
+# "Who owns example.com": nobody types that when choosing a business, and the answer is not a fact we confirm.
+_OWNER_ASK = re.compile(r"\bwho\s+(?:owns|owned|is\s+behind|is\s+the\s+owner\s+of)\b|\bowner\s+of\b|\bqui\s+(?:possede|possède|est\s+le\s+proprietaire|est\s+le\s+propriétaire)\b", re.I)
 _YES_NO_FR = re.compile(r"^\s*(est-ce\s+qu|peut-on|peuvent-ils|a-t-|ont-ils)|-t-(il|elle|ils|elles|on)\b|\b(est|sont)-(il|elle|ils|elles)\b", re.I)
 
 
@@ -195,6 +208,22 @@ def _repair_tags(item: dict, languages: list[str], terms) -> tuple[dict | None, 
             tags["intent"] = None
             flags.append(f"intent was {intent!r}: set it by hand")
 
+    topic = item.get("fact_topic")
+    tags["fact_topic"] = None
+    if tags["kind"] == "brand":
+        if isinstance(topic, str) and topic.strip().lower() in FACT_TOPICS:
+            tags["fact_topic"] = topic.strip().lower()
+            if tags["fact_topic"] != topic:
+                repairs.append(f"fact_topic \"{topic}\" written as {tags['fact_topic']}")
+        elif topic not in (None, ""):
+            flags.append(f"fact_topic was {topic!r}, which is not one of the topics: set it by hand")
+    elif topic not in (None, ""):
+        repairs.append("a discovery question has no fact_topic: removed")
+    need = item.get("need")
+    tags["need"] = need.strip().lower() if isinstance(need, str) and need.strip().lower() in NEEDS else None
+    place = item.get("place")
+    tags["place"] = place.strip() if isinstance(place, str) and place.strip() else None
+
     ids = item.get("relies_on_fact_ids")
     if ids is None:
         tags["relies_on"] = []
@@ -219,14 +248,18 @@ def _repair_tags(item: dict, languages: list[str], terms) -> tuple[dict | None, 
 
 def check_questions(raw: list[dict], *, name: str | None, domain: str | None, alternates: list[str] | None,
                     languages: list[str], confirmed_fact_ids: set[int],
-                    already: list[Candidate]) -> tuple[list[Candidate], list[Rejection]]:
+                    already: list[Candidate], place_rule: PlaceRule | None = None) -> tuple[list[Candidate], list[Rejection]]:
     """Splits what the model proposed into questions we keep and questions we drop, with the reasons.
 
     Dropped: no question text; an exact repeat; a near repeat; a brand question that does not name the business;
     a brand question relying on a fact that is not confirmed. Everything else that is only a judgement call is KEPT
     and flagged needs_review with a short reason: the yes/no "claim" heuristic, a discovery question that names the
     business (re-tagged brand), tags that could not be repaired. `already` are questions kept earlier (the retry
-    cannot repeat them)."""
+    cannot repeat them).
+
+    Step 25e adds: a non-control discovery question for a local business must carry a place (dropped, and replaced by the
+    retry, if it does not); a brand question must have a fact_topic (flagged if not); "who owns" questions are dropped;
+    a place written differently from the site's own form in that language, or a question that looks like two asks, is flagged."""
     terms = brand_terms(name, domain, alternates)
     kept: list[Candidate] = []
     rejected: list[Rejection] = []
@@ -242,18 +275,36 @@ def check_questions(raw: list[dict], *, name: str | None, domain: str | None, al
         control, relies_on = tags["control"], tags["relies_on"]
         names_brand = contains_brand(text, terms)
         c = Candidate(text=text, kind=kind, language=tags["language"], intent=tags["intent"],
-                      is_target=tags["is_target"], control=control, relies_on=relies_on, repairs=repairs)
+                      is_target=tags["is_target"], control=control, relies_on=relies_on, repairs=repairs,
+                      fact_topic=tags["fact_topic"], need=tags["need"], place=tags["place"])
         for f in flags:
             _flag(c, f)
 
         reasons: list[str] = []
         if kind == "discovery" and names_brand:
             # Re-tagged, not dropped: the question is fine as a brand question. Target, intent, control and spot check reset.
-            c.kind, c.intent, c.is_target, c.control = "brand", None, False, False
+            c.kind, c.intent, c.is_target, c.control, c.need = "brand", None, False, False, None
             _flag(c, f"drafted as a discovery question but it names the business (\"{names_brand}\"): re-tagged brand")
             kind = "brand"
         if kind == "brand" and not names_brand:
             reasons.append("a brand question must name the business or its web address")
+        if kind == "discovery" and not c.control and place_rule is not None and place_rule.required:
+            c.needs_place = True
+            c.place_how = anchor(place_rule, text, c.place)
+            if c.place_how is None:
+                reasons.append("it names no place: a customer choosing a business types the city, a neighbourhood the site names, "
+                               "or \"near me\". Add the place to the question")
+            else:
+                issue = language_issue(place_rule, text, c.language)
+                if issue:
+                    _flag(c, issue)
+        if kind == "discovery" and not c.control and text.count("?") > 1:
+            _flag(c, "it may ask two things in one question (more than one question mark)")
+        if kind == "brand":
+            if _OWNER_ASK.search(text):
+                reasons.append("a \"who owns\" question: not something a customer asks when choosing, and not a confirmed fact")
+            if c.fact_topic is None and not any("fact_topic" in f for f in flags):
+                _flag(c, "a brand question with no fact_topic: set which fact its answer is about")
         if kind == "brand":
             unconfirmed = [i for i in relies_on if i not in confirmed_fact_ids]
             if unconfirmed:
@@ -388,20 +439,69 @@ def order_for_file(items: list[Candidate], languages: list[str]) -> list[Candida
     return sorted(items, key=lambda c: (group_rank[c.group], lang_rank.get(c.language, len(languages)), rank[length_of(c.text)]))
 
 
+# ---- what the brand questions cover -------------------------------------------------------------------------------------------
+
+def topics_used(items: list[Candidate]) -> list[str]:
+    return sorted({c.fact_topic for c in items if c.kind == "brand" and c.fact_topic})
+
+
+def needs_used(items: list[Candidate]) -> list[str]:
+    return [n for n in NEEDS if any(c.need == n for c in items if c.kind == "discovery" and not c.control)]
+
+
+def coverage_warnings(items: list[Candidate], *, name: str | None, domain: str | None, location: str | None,
+                      needs_place: bool) -> list[str]:
+    """Things the brand and discovery questions should cover. Warnings only: never padded, never a reason to drop."""
+    out: list[str] = []
+    brand = [c for c in items if c.kind == "brand"]
+    if brand:
+        want = min(MIN_TOPICS, len(brand))
+        have = topics_used(brand)
+        if len(have) < want:
+            out.append(f"Brand questions cover {len(have)} fact topic(s) ({', '.join(have) or 'none'}); the aim is at least {want}.")
+        host = (domain or "").lower().removeprefix("www.")
+        if host and not any(host in c.text.lower() for c in brand):
+            out.append("No brand question uses the web address (the \"with the URL\" variant).")
+        if name and needs_place and location and not any(
+                fold_has(c.text, name) and fold_has(c.text, location) for c in brand):
+            out.append(f"No brand question puts the city after the name (\"{name} {location}\"), which tests whether AI mixes it up with another business.")
+        if name and not any(_RECOGNITION.search(c.text) and fold_has(c.text, name) for c in brand):
+            out.append("No plain recognition question (\"What is <name>?\").")
+    disc = [c for c in items if c.kind == "discovery" and not c.control]
+    if disc and len(disc) >= len(NEEDS):
+        have = needs_used(disc)
+        if len(have) < len(NEEDS):
+            missed = [n for n in NEEDS if n not in have]
+            out.append(f"Discovery questions cover {len(have)} of {len(NEEDS)} customer needs; none for: {', '.join(missed)}.")
+    return out
+
+
+_RECOGNITION = re.compile(r"^\s*(what|who)(?:\s+is|'s|’s)\b|^\s*(qu'est-ce que|qui est|c'est quoi)\b", re.I)
+
+
+def fold_has(text: str, needle: str) -> bool:
+    from questions_draft.location import fold
+    n = fold(needle)
+    return bool(n) and n in fold(text)
+
+
 # ---- the spot check, chosen by a fixed rule -------------------------------------------------------------------------------------
 
 def choose_spot_check(items: list[Candidate], languages: list[str], domain: str | None) -> list[int]:
     """Indexes (into `items`) of the questions flagged spot_check. The rule, with no AI and no randomness:
 
       - never a control and never a question flagged needs_review; 5 discovery and 3 brand where there are that many, else the other kind makes up the eight
-      - within each kind, every requested language appears at least once (in the order the languages were given)
-      - across the whole set, every length present appears at least once, as far as the eight places allow
+      - discovery: a different customer need each (service, urgent, price ...), each carrying a place when one is required
+      - brand: a different fact_topic each (a plain recognition question counts as "other" and comes last)
+      - within each kind, every requested language appears at least once, and every length present, as far as the places allow
       - at least one brand question that uses the web address, if there is one
       - what is left is filled in file order
 
     Within each step the first matching question, in the order given, wins."""
     host = (domain or "").lower().removeprefix("www.")
-    disc = [i for i, c in enumerate(items) if c.kind == "discovery" and not c.control and not c.needs_review]
+    # a discovery question that had to carry a place and does not is never picked (the checks already drop it; this is the second lock)
+    disc = [i for i, c in enumerate(items) if c.kind == "discovery" and not c.control and not c.needs_review
+            and not (c.needs_place and c.place_how is None)]
     brand = [i for i, c in enumerate(items) if c.kind == "brand" and not c.control and not c.needs_review]
 
     n_disc, n_brand = min(SPOT_DISCOVERY, len(disc)), min(SPOT_BRAND, len(brand))
@@ -410,7 +510,23 @@ def choose_spot_check(items: list[Candidate], languages: list[str], domain: str 
     n_disc, spare = n_disc + more, spare - more
     n_brand += min(spare, len(brand) - n_brand)
 
-    def take(pool: list[int], budget: int, already: list[int], *, want_address: bool = False) -> list[int]:
+    def distinct(pool: list[int], picked: list[int], budget: int, already: list[int], key) -> None:
+        """Adds questions with a value of `key` not yet picked. Among those, a new language beats a new length beats file order."""
+        seen = {key(items[i]) for i in picked}
+        while len(picked) < budget:
+            unmet = [l for l in languages if not any(items[j].language == l for j in picked) and any(items[j].language == l for j in pool)]
+            if budget - len(picked) <= len(unmet):
+                return                      # the places that are left go to the languages not yet covered
+            options = [i for i in pool if i not in picked and key(items[i]) is not None and key(items[i]) not in seen]
+            if not options:
+                return
+            best = max(options, key=lambda i: (key(items[i]) != "other",
+                                               not any(items[j].language == items[i].language for j in picked),
+                                               not any(length_of(items[j].text) == length_of(items[i].text) for j in [*already, *picked])))
+            picked.append(best)
+            seen.add(key(items[best]))
+
+    def take(pool: list[int], budget: int, already: list[int], *, want_address: bool = False, key=None) -> list[int]:
         picked: list[int] = []
 
         def add(i: int | None) -> None:
@@ -419,6 +535,8 @@ def choose_spot_check(items: list[Candidate], languages: list[str], domain: str 
 
         if want_address and host:
             add(next((i for i in pool if host in items[i].text.lower()), None))
+        if key is not None:
+            distinct(pool, picked, budget, already, key)
         for lang in languages:
             if not any(items[i].language == lang for i in picked):
                 add(next((i for i in pool if items[i].language == lang), None))
@@ -429,6 +547,6 @@ def choose_spot_check(items: list[Candidate], languages: list[str], domain: str 
             add(i)
         return picked
 
-    chosen = take(disc, n_disc, [])
-    chosen += take(brand, n_brand, chosen, want_address=True)
+    chosen = take(disc, n_disc, [], key=lambda c: c.need)
+    chosen += take(brand, n_brand, chosen, want_address=True, key=lambda c: c.fact_topic)
     return sorted(chosen)
