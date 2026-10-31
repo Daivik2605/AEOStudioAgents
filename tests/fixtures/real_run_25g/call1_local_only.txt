@@ -1,0 +1,1 @@
+{"local": true, "local_reason": "dental clinic with a physical office, serving walk-in patients"}

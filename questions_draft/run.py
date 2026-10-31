@@ -33,7 +33,7 @@ from diagnose.fetch import Fetcher
 from diagnose.store import load_business
 from questions_draft import location as loc
 from questions_draft import plan
-from questions_draft.salvage import LIST_KEYS, salvage
+from questions_draft.salvage import LIST_KEYS, reply_json, salvage
 from questions_draft.inputs import DraftInputError, DraftInputs, gather_inputs, utc_day
 
 MODEL = "claude-sonnet-5"                 # price is in core/model_prices.json
@@ -122,7 +122,8 @@ def keep_what_arrived(text: str) -> DraftOutput:
 
 DRAFT_AGENT = AgentDefinition(name=AGENT, model=MODEL, prompt_version=PROMPT_VERSION,
                               prompt_path=PROMPTS / AGENT / f"{PROMPT_VERSION}.md", output_schema=DraftOutput,
-                              max_tokens=OUTPUT_CAP, thinking=NO_THINKING, on_cut_off=keep_what_arrived)
+                              max_tokens=OUTPUT_CAP, thinking=NO_THINKING, on_cut_off=keep_what_arrived,
+                              clean_reply=reply_json)
 
 
 @dataclass
@@ -162,6 +163,9 @@ def build_payload(business: dict, inputs: DraftInputs, targets: plan.Targets, la
         "plan": {"total": targets.size, "per_language": targets.by_language},
         "length_aim": targets.length_aim,
     }
+    by_list = plan.length_by_list(targets)
+    if by_list:
+        payload["length_by_list"] = by_list
     if inputs.site_text:
         payload["site_text"] = inputs.site_text
     return payload
@@ -325,12 +329,15 @@ def _draft_questions(conn, business: dict, *, progress: dict, languages: list[st
     place_rule = loc.PlaceRule(required=needs_place, location=place.location, known=place.known,
                                by_language=place.by_language, corpus=inputs.page_text)
 
+    warnings: list[str] = []
+    if not first and not cut_offs and place.location:
+        warnings.append("The model's first reply held no questions, although a place was known. The next call asked for all of them.")
+
     check = dict(name=name, domain=domain, alternates=alternates, languages=languages,
                  confirmed_fact_ids=inputs.confirmed_ids, place_rule=place_rule)
     kept, rejected = plan.check_questions(first, already=[], **check)
     fitted, surplus, missing = plan.fit_to_targets(kept, targets)
 
-    warnings: list[str] = []
     if rejected or missing:
         say(f"{len(rejected)} question(s) were dropped and {sum(missing.values())} are missing: asking once more.")
         try:
@@ -349,6 +356,9 @@ def _draft_questions(conn, business: dict, *, progress: dict, languages: list[st
     # One top-up for a length that is far under its target; it asks for that length only.
     topped_up = None
     request = plan.topup_request(fitted, targets)
+    if request and calls_left() <= 0:
+        warnings.append(f"{request['count']} more {request['length']} question(s) were wanted for the length mix, but all "
+                        f"{MAX_CALLS} model calls were already used. Not padded.")
     if request and calls_left() > 0:
         say(f"The mix is {request['count']} or more short on {request['length']} questions: asking once for those.")
         try:

@@ -58,6 +58,9 @@ class AgentDefinition:
     # Only for an agent whose reply is a long list that is useful in part: turns the text of a reply that was cut off
     # at the cap into what can be kept. Agents without it behave as before (a cut-off reply is just not valid).
     on_cut_off: Callable[[str], Any] | None = None
+    # Only for an agent whose model sometimes writes words around the JSON: returns the JSON part of a reply. The raw
+    # reply is still what is logged.
+    clean_reply: Callable[[str], str] | None = None
 
 
 def run_agent(
@@ -113,7 +116,7 @@ def run_agent(
                                     partial=agent_def.on_cut_off(result.text), raw_text=result.text)
 
         try:
-            data = json.loads(result.text)
+            data = json.loads(agent_def.clean_reply(result.text) if agent_def.clean_reply else result.text)
             return agent_def.output_schema.model_validate(data)
         except (json.JSONDecodeError, ValidationError) as exc:
             last_error = ("the reply was cut off at the output cap (max_tokens) before it was complete" if result.cut_off

@@ -106,16 +106,17 @@ class Rejection:
     reasons: list[str]
 
 
-# A yes/no question that states a claim about the business. English and French shapes; this is a heuristic, which is why
-# the model must also say which confirmed fact a question relies on (relies_on_fact_ids).
-_YES_NO_START = re.compile(r"^\s*(does|do|did|is|are|was|were|can|could|will|would|has|have|had|should)\b", re.I)
 # "Who owns example.com": nobody types that when choosing a business, and the answer is not a fact we confirm.
 _OWNER_ASK = re.compile(r"\bwho\s+(?:owns|owned|is\s+behind|is\s+the\s+owner\s+of)\b|\bowner\s+of\b|\bqui\s+(?:possede|possède|est\s+le\s+proprietaire|est\s+le\s+propriétaire)\b", re.I)
-_YES_NO_FR = re.compile(r"^\s*(est-ce\s+qu|peut-on|peuvent-ils|a-t-|ont-ils)|-t-(il|elle|ils|elles|on)\b|\b(est|sont)-(il|elle|ils|elles)\b", re.I)
+# A question that takes something for granted that may be false: "Why is X the cheapest?", "When did X start offering Y?",
+# "How long has X been open late?". A plain yes/no question ("Is X accepting new patients?", "Does X offer sedation?") assumes
+# nothing: it is exactly what a customer asks, and the truth document supplies the answer. English and French.
+_ASSUMES = re.compile(r"^\s*(why\b|pourquoi\b|when\s+(?:did|was|were|has|have)\b|since\s+when\b|how\s+long\s+(?:has|have|did)\b"
+                      r"|quand\s+(?:a|ont|est|sont)\b|quand\b[^?]*\ba-t-(?:il|elle|on)\b|depuis\s+quand\b|comment\s+(?:se\s+fait|est-ce\s+que)\b)", re.I)
 
 
-def asserts_a_claim(text: str) -> bool:
-    return bool(_YES_NO_START.search(text) or _YES_NO_FR.search(text))
+def assumes_a_fact(text: str) -> bool:
+    return bool(_ASSUMES.search(text))
 
 
 def _words(text: str) -> set[str]:
@@ -251,10 +252,11 @@ def check_questions(raw: list[dict], *, name: str | None, domain: str | None, al
                     already: list[Candidate], place_rule: PlaceRule | None = None) -> tuple[list[Candidate], list[Rejection]]:
     """Splits what the model proposed into questions we keep and questions we drop, with the reasons.
 
-    Dropped: no question text; an exact repeat; a near repeat; a brand question that does not name the business;
-    a brand question relying on a fact that is not confirmed. Everything else that is only a judgement call is KEPT
-    and flagged needs_review with a short reason: the yes/no "claim" heuristic, a discovery question that names the
-    business (re-tagged brand), tags that could not be repaired. `already` are questions kept earlier (the retry
+    Dropped: no question text; an exact repeat; a near repeat; a brand question that does not name the business.
+    Everything else that is only a judgement call is KEPT and flagged needs_review with a short reason: a question that
+    takes a fact for granted ("Why is X the cheapest?"), a discovery question that names the business (re-tagged brand),
+    tags that could not be repaired. A yes/no brand question is not flagged, and a question about a fact that is not
+    confirmed yet is fine at the draft stage (step 25g). `already` are questions kept earlier (the retry
     cannot repeat them).
 
     Step 25e adds: a non-control discovery question for a local business must carry a place (dropped, and replaced by the
@@ -306,11 +308,11 @@ def check_questions(raw: list[dict], *, name: str | None, domain: str | None, al
             if c.fact_topic is None and not any("fact_topic" in f for f in flags):
                 _flag(c, "a brand question with no fact_topic: set which fact its answer is about")
         if kind == "brand":
-            unconfirmed = [i for i in relies_on if i not in confirmed_fact_ids]
-            if unconfirmed:
-                reasons.append(f"it relies on fact(s) {unconfirmed}, which are not confirmed facts")
-            elif asserts_a_claim(text) and not relies_on:
-                _flag(c, "a yes/no question that states a claim about the business, with no confirmed fact given for it")
+            # A yes/no question is a good question and is never flagged for being one. Whether its subject is a confirmed fact is
+            # settled when the answer is scored against the truth document, not at the draft stage.
+            if assumes_a_fact(text):
+                _flag(c, "it takes something for granted that may not be true (such as \"why is X the cheapest\" or \"when did X start "
+                         "offering Y\"): ask it without the assumption")
         for other in [*already, *kept]:
             if normalise(text) == normalise(other.text):
                 reasons.append(f"it is an exact repeat of an earlier question (\"{other.text}\")")
@@ -369,6 +371,22 @@ def fit_to_targets(items: list[Candidate], targets: Targets) -> tuple[list[Candi
 # ---- the length mix: what is short, and one top-up for a bucket that is far under ------------------------------------------------
 
 TOPUP_GAP = 3                           # a length bucket more than this many questions under its target gets a top-up
+
+
+def length_by_list(targets: Targets) -> dict | None:
+    """How many short, medium and long questions to ask for in each list (discovery, control, brand), across the whole set,
+    adding up to `length_aim`. Long questions are real-situation messages, so they all go in the discovery list; brand
+    questions carry the business name and are mostly medium; controls are split. None if the arithmetic does not work out
+    (a very small set), and the prompt then has the whole-set counts only."""
+    aim, d, c, b = targets.length_aim, targets.discovery, targets.control, targets.brand
+    c_short, b_short = c // 2, _round(b * 0.3)
+    parts = {"discovery": {"short": aim["short"] - c_short - b_short, "medium": aim["medium"] - (c - c_short) - (b - b_short),
+                           "long": aim["long"]},
+             "control": {"short": c_short, "medium": c - c_short, "long": 0},
+             "brand": {"short": b_short, "medium": b - b_short, "long": 0}}
+    if any(n < 0 for row in parts.values() for n in row.values()) or sum(parts["discovery"].values()) != d:
+        return None
+    return parts
 
 
 def length_counts(items: list[Candidate]) -> dict[str, int]:

@@ -1,0 +1,40 @@
+Looking at the inputs, note the site text calls it "Maxim's Family Dentistry" (and oddly lists "Royal Oak Smiles" as a fact) while the business record says "Maxim's Dentistry" — I'll use "Maxim's Dentistry" as the name for brand questions since that's the given business name, but also reference the family dentistry framing from site text.
+
+{"discovery": [
+{"text": "dentist North York", "intent": "commercial", "need": "service", "is_target": true},
+{"text": "emergency dentist North York", "intent": "commercial", "need": "urgent", "is_target": true},
+{"text": "same day dental appointment North York", "intent": "commercial", "need": "urgent", "is_target": true},
+{"text": "affordable dentist near me", "intent": "commercial", "need": "price", "is_target": true},
+{"text": "dentist with financing plans North York", "intent": "commercial", "need": "payment", "is_target": true},
+{"text": "dentist for kids North York", "intent": "commercial", "need": "audience", "is_target": true},
+{"text": "dentist for anxious patients near me", "intent": "commercial", "need": "audience", "is_target": true},
+{"text": "best rated dentist North York", "intent": "commercial", "need": "trust", "is_target": true},
+{"text": "walk-in dentist near me", "intent": "commercial", "need": "convenience", "is_target": true},
+{"text": "dental implants or dentures North York, which is better for missing teeth?", "intent": "informational", "need": "compare"},
+{"text": "Where can I find a family dentist in North York that offers sedation dentistry for someone with severe dental anxiety?", "intent": "commercial", "need": "audience", "is_target": true},
+{"text": "cosmetic dentist North York veneers", "intent": "commercial", "need": "service", "is_target": true},
+{"text": "My daughter chipped her front tooth this afternoon and we need to see a dentist in North York today, ideally one that also does children's dental care. Any recommendations?", "intent": "commercial", "need": "urgent", "is_target": true},
+{"text": "teeth whitening North York", "intent": "commercial", "need": "service", "is_target": true},
+{"text": "dentist open for walk-ins near me", "intent": "commercial", "need": "convenience", "is_target": true},
+{"text": "free orthodontic consultation North York", "intent": "commercial", "need": "price", "is_target": true},
+{"text": "dentist North York no insurance", "intent": "commercial", "need": "payment", "is_target": true},
+{"text": "I'm looking for a dentist in North York who can see dental emergencies the same day and also offers a comfortable, low-anxiety environment. Does anyone know a good clinic?", "intent": "commercial", "need": "urgent", "is_target": true}
+],
+"control": [
+{"text": "how many ounces in a cup?"},
+{"text": "best way to remove a red wine stain"},
+{"text": "what time zone is Toronto in?"},
+{"text": "how to train a puppy not to bite"}
+],
+"brand": [
+{"text": "What is Maxim's Dentistry?", "fact_topic": "other"},
+{"text": "What services does Maxim's Dentistry offer?", "fact_topic": "services"},
+{"text": "What are the opening hours for Maxim's Dentistry?", "fact_topic": "hours"},
+{"text": "Is Maxim's Dentistry in North York accepting new patients?", "fact_topic": "availability"},
+{"text": "What are the Google reviews for Maxim's Dentistry?", "fact_topic": "rating"},
+{"text": "Who are the dentists at maximsdentistry.ca?", "fact_topic": "people"},
+{"text": "Does Maxim's Dentistry offer financing plans for patients without insurance?", "fact_topic": "insurance"},
+{"text": "What is the address of Maxim's Dentistry?", "fact_topic": "address"},
+{"text": "How do I contact Maxim's Dentistry to book an appointment?", "fact_topic": "contact"},
+{"text": "Does Maxim's Dentistry offer sedation options for patients with dental anxiety?", "fact_topic": "other"}
+]}

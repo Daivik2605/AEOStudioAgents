@@ -390,7 +390,7 @@ def test_the_v4_reply_shape_does_not_ask_for_what_the_code_knows():
         assert derived not in shape, derived
     assert '"discovery":' in shape and '"control":' in shape and '"brand":' in shape
     assert "cut_off" in v4 and "no \"kind\"" in v4
-    assert len(v4) < len((ROOT / "prompts/questions_draft/v3.md").read_text()) * 1.1
+    assert len(v4) < len((ROOT / "prompts/questions_draft/v3.md").read_text()) * 1.3        # the input stays about the size it was
 
 
 def test_plan_has_row_25f_and_the_corrected_url_wording():

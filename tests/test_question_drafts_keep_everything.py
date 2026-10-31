@@ -29,7 +29,7 @@ def spot(items):
 def test_a_soft_flagged_question_is_in_the_file_with_its_flag_and_never_in_the_spot_check(biz, tmp_path):
     diagnosed(biz, tmp_path)
     items = clean_set(biz)
-    claim = q(f"Does {biz['name']} offer water stations for festivals?", kind="brand", fact_topic="services")
+    claim = q(f"Why is {biz['name']} the cheapest for festivals?", kind="brand", fact_topic="services")      # assumes a fact (step 25g)
     items[10] = claim                                                      # a brand slot, first in file order among brand
     r = run(biz, tmp_path, fake(items))
     saved = file_items(r)
@@ -43,8 +43,8 @@ def test_a_soft_flagged_question_is_in_the_file_with_its_flag_and_never_in_the_s
 def test_flagged_questions_are_never_chosen_even_when_they_come_first(biz, tmp_path):
     diagnosed(biz, tmp_path)
     items = clean_set(biz)
-    items[0] = q(f"Does {biz['name']} deliver on weekends?", kind="brand", fact_topic="services")             # flagged, would be first in its group
-    items[1] = q(f"Is {biz['name']} open at night?", kind="brand", fact_topic="services")
+    items[0] = q(f"Why does {biz['name']} deliver on weekends?", kind="brand", fact_topic="services")         # flagged, would be first in its group
+    items[1] = q(f"When did {biz['name']} start opening at night?", kind="brand", fact_topic="hours")
     r = run(biz, tmp_path, fake(items))
     assert len(spot(file_items(r))) == 8
     assert not any(i.get("needs_review") and i["spot_check"] for i in file_items(r))
@@ -80,7 +80,7 @@ def test_the_loader_refuses_a_badly_typed_flag(tmp_path, entry):
 def test_the_saved_draft_passes_the_audit_loader_with_flags_in_it(biz, tmp_path):
     diagnosed(biz, tmp_path)
     items = clean_set(biz)
-    items[10] = q(f"Does {biz['name']} serve festivals?", kind="brand", fact_topic="services")
+    items[10] = q(f"Why does {biz['name']} serve festivals?", kind="brand", fact_topic="services")
     r = run(biz, tmp_path, fake(items))
     qs = load_question_set(r.path)
     assert sum(1 for x in qs.items if x.needs_review) == 1 and '"needs_review": true' in r.path.read_text()
@@ -143,11 +143,11 @@ def test_a_brand_question_with_an_intent_or_control_flag_is_repaired(biz, tmp_pa
 def test_the_summary_prints_the_three_groups(biz, tmp_path):
     diagnosed(biz, tmp_path)
     items = clean_set(biz)
-    items[10] = q(f"Does {biz['name']} serve festivals?", kind="brand", fact_topic="services")
+    items[10] = q(f"Why does {biz['name']} serve festivals?", kind="brand", fact_topic="services")
     items[1] = dict(items[0])
     out = "\n".join(qrun.summary_lines(run(biz, tmp_path, fake(items, []))))
     assert "1. Kept, clean:" in out and "2. Kept and FLAGGED for review" in out and "3. Dropped, not in the file: 1" in out
-    assert "states a claim" in out and "exact repeat" in out
+    assert "takes something for granted" in out and "exact repeat" in out
 
 
 # ---- 2. the length mix --------------------------------------------------------------------------------------------------------------

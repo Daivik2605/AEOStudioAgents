@@ -243,16 +243,19 @@ def test_a_brand_question_that_does_not_name_the_business_is_rejected(biz, tmp_p
     assert r.missing == {("brand", "fr"): 1}
 
 
-def test_a_claim_question_is_kept_and_flagged_but_one_relying_on_an_unconfirmed_fact_is_dropped(biz, tmp_path):
+def test_a_yes_no_brand_question_is_clean_but_one_that_assumes_a_fact_is_flagged(biz, tmp_path):
+    """Step 25g. Before it, any yes/no brand question was flagged as a claim, and one relying on an unconfirmed fact was dropped."""
     diagnosed(biz, tmp_path)                                       # a prospect: nothing is confirmed
     items = clean_set(biz)
-    items[11] = q(f"Does {biz['name']} offer water stations for festivals?", kind="brand", fact_topic="services")      # states a claim, relies on nothing
-    items[12] = q(f"What events does {biz['name']} serve?", kind="brand", relies=[1], fact_topic="services")          # relies on a fact that is not confirmed
-    r = run(biz, tmp_path, fake(items, items[11:13]))
-    assert any("not confirmed facts" in " ".join(x.reasons) for x in r.rejected)
-    assert not any("What events does" in i["text"] for i in file_items(r))
-    claim = next(i for i in file_items(r) if "offer water stations" in i["text"])
-    assert claim["needs_review"] is True and "states a claim" in claim["review_reason"]
+    items[11] = q(f"Does {biz['name']} offer water stations for festivals?", kind="brand", fact_topic="services")      # a plain yes/no question
+    items[12] = q(f"Is {biz['name']} accepting new customers?", kind="brand", relies=[1], fact_topic="availability")   # about an unconfirmed fact: fine
+    items[13] = q(f"Why is {biz['name']} the cheapest?", kind="brand", fact_topic="prices")                            # takes a fact for granted
+    r = run(biz, tmp_path, fake(items))
+    assert r.rejected == []
+    saved = {i["text"]: i for i in file_items(r)}
+    assert not saved[items[11]["text"]].get("needs_review") and not saved[items[12]["text"]].get("needs_review")
+    assumed = saved[items[13]["text"]]
+    assert assumed["needs_review"] is True and "takes something for granted" in assumed["review_reason"]
 
 
 def test_a_brand_question_relying_on_a_confirmed_fact_is_allowed(biz, tmp_path):

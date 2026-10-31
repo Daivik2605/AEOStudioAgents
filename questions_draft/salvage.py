@@ -49,8 +49,25 @@ def _opening_fields(text: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def reply_json(text: str) -> str:
+    """The reply's JSON object, when the model wrote a few lines of reasoning before it (step 25g; a model with thinking off
+    sometimes thinks aloud in the answer). Starts at the first `{` that opens a whole object holding one of our keys and
+    ends where that object ends, so words before or after it are ignored. A reply with no such object comes back as it was,
+    and fails the normal checks. Nothing inside the object is changed."""
+    decoder = json.JSONDecoder()
+    for m in re.finditer(r"\{", text):
+        try:
+            obj, end = decoder.raw_decode(text, m.start())
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and ({"local", *LIST_KEYS} & obj.keys()):
+            return text[m.start():end]
+    return text
+
+
 def salvage(text: str) -> dict:
     """What can be kept from a cut-off reply, as a dict shaped like a whole reply (only the lists that had questions)."""
+    text = text[max(text.find("{"), 0):]                 # words before the JSON are not part of it
     out = _opening_fields(text)
     for key in LIST_KEYS:
         items = _complete_objects(text, key)
